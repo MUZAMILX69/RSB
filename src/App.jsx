@@ -67,9 +67,10 @@ async function syncTable(table, prevArr, nextArr) {
   toUpdate.forEach((x) => ops.push(sbUpdate(table, x.id, x)));
   await Promise.all(ops);
 }
-async function saveRefreshToken(token) { try { await window.storage.set("sbs-refresh-token", token, false); } catch (e) {} }
-async function loadRefreshToken() { try { const r = await window.storage.get("sbs-refresh-token", false); return r ? r.value : null; } catch (e) { return null; } }
-async function clearRefreshToken() { try { await window.storage.delete("sbs-refresh-token", false); } catch (e) {} }
+async function saveRefreshToken(token) { try { localStorage.setItem("sbs-refresh-token", token); } catch (e) {} }
+async function loadRefreshToken() { try { return localStorage.getItem("sbs-refresh-token"); } catch (e) { return null; } }
+async function clearRefreshToken() { try { localStorage.removeItem("sbs-refresh-token"); } catch (e) {} }
+async function authRecover(email) { return sbRequest("/auth/v1/recover", { method: "POST", body: { email } }); }
 
 const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() :
   "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); });
@@ -228,7 +229,7 @@ function LotPicker({ rowKey, lots, value, onChange, labelFn, placeholder }) {
    AUTH: login screen + top-level gate
    ========================================================= */
 function LoginScreen({ onAuthed }) {
-  const [mode, setMode] = useState("signin");
+  const [mode, setMode] = useState("signin"); // signin | signup | forgot
   const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [fullName, setFullName] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [notice, setNotice] = useState("");
 
@@ -240,7 +241,7 @@ function LoginScreen({ onAuthed }) {
         setAccessToken(data.access_token);
         await saveRefreshToken(data.refresh_token);
         onAuthed({ accessToken: data.access_token, refreshToken: data.refresh_token, user: data.user });
-      } else {
+      } else if (mode === "signup") {
         const data = await authSignUp(email.trim(), password, fullName.trim());
         if (data && data.access_token) {
           setAccessToken(data.access_token);
@@ -250,6 +251,9 @@ function LoginScreen({ onAuthed }) {
           setNotice("Account created. If email confirmation is turned on, check your inbox first, then sign in below.");
           setMode("signin");
         }
+      } else if (mode === "forgot") {
+        await authRecover(email.trim());
+        setNotice("If that email has an account, a reset link has been sent.");
       }
     } catch (e) {
       setErr(e.message || "Something went wrong.");
@@ -259,24 +263,29 @@ function LoginScreen({ onAuthed }) {
   };
 
   return (
-    <div className="app-shell login-shell">
+    <div className="login-page">
       <Style />
       <div className="login-card">
         <div className="eyebrow">Bleach board reel &amp; production register</div>
         <h1 className="login-title">Sale Base Stock</h1>
-        <div className="login-sub">{mode === "signin" ? "Sign in to continue" : "Create an account"}</div>
-        {mode === "signup" && <Field label="Full name (optional)"><input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Shown to the admin" /></Field>}
-        <Field label="Email"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" /></Field>
-        <Field label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" /></Field>
+        <div className="login-sub">{mode === "signin" ? "Sign in to continue" : mode === "signup" ? "Create an account" : "Reset your password"}</div>
+        {mode === "signup" && <Field label="Full name (optional)"><input value={fullName} onChange={(e) => setFullName(e.target.value)} /></Field>}
+        <Field label="Email"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
+        {mode !== "forgot" && <Field label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></Field>}
         {err && <div className="login-error">{err}</div>}
         {notice && <div className="login-notice">{notice}</div>}
-        <button className="btn primary login-submit" onClick={submit} disabled={busy || !email || !password}>
-          {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+        <button className="btn primary login-submit" onClick={submit} disabled={busy || !email || (mode !== "forgot" && !password)}>
+          {busy ? "Please wait…" : mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
         </button>
-        <button className="login-switch" onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setErr(""); setNotice(""); }}>
-          {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
-        </button>
-        <div className="login-hint">New accounts start as an employee with limited access — an admin can grant more from the Team tab. The very first account has to be promoted to admin once via SQL (see the schema notes you were given).</div>
+        {mode === "signin" && (
+          <>
+            <button className="login-switch" onClick={() => { setMode("signup"); setErr(""); setNotice(""); }}>New here? Create an account</button>
+            <button className="login-switch" onClick={() => { setMode("forgot"); setErr(""); setNotice(""); }}>Forgot password?</button>
+          </>
+        )}
+        {mode !== "signin" && (
+          <button className="login-switch" onClick={() => { setMode("signin"); setErr(""); setNotice(""); }}>Back to sign in</button>
+        )}
       </div>
     </div>
   );
@@ -305,7 +314,7 @@ export default function ReelStockManager() {
 
   const handleSignOut = async () => { setAccessToken(null); await clearRefreshToken(); setSession(null); };
 
-  if (booting) return <div className="app-shell loading-shell"><Style /><Loader2 className="spin" size={22} /><span>Checking session...</span></div>;
+  if (booting) return <div className="login-page"><Style /><div className="boot-loader"><Loader2 className="spin" size={22} /><span>Checking session...</span></div></div>;
   if (!session) return <LoginScreen onAuthed={setSession} />;
   return <AuthedApp session={session} onSignOut={handleSignOut} />;
 }
@@ -1757,6 +1766,9 @@ function StockReportTab({ ctx }) {
     if (sort.field === "date") return (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) * (sort.dir === "asc" ? -1 : 1);
     if (sort.field === "weight") return (Number(a.weight) - Number(b.weight)) * dir;
     if (sort.field === "remaining") return (lotInfo[a.id].remaining - lotInfo[b.id].remaining) * dir;
+    if (sort.field === "description") return reelDesc(a).localeCompare(reelDesc(b)) * dir;
+    if (sort.field === "lotNo") return String(a.lotNo).localeCompare(String(b.lotNo), undefined, { numeric: true }) * dir;
+    if (sort.field === "width") return (Number(a.width) - Number(b.width)) * dir;
     return 0;
   });
   const sumRemaining = sorted.reduce((a, lot) => a + lotInfo[lot.id].remaining, 0);
@@ -1781,7 +1793,7 @@ function StockReportTab({ ctx }) {
         <Field label="Status"><MultiSelect options={statusOptions} values={statusFilter} onChange={setStatusFilter} /></Field>
         <Field label="From"><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
         <Field label="To"><input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
-        <SortControl value={sort} onChange={setSort} options={[{ value: "date", label: "Date" }, { value: "weight", label: "Received weight" }, { value: "remaining", label: "Remaining weight" }]} />
+        <SortControl value={sort} onChange={setSort} options={[{ value: "date", label: "Date" }, { value: "description", label: "Item description" }, { value: "lotNo", label: "Lot no" }, { value: "width", label: "Width" }, { value: "weight", label: "Received weight" }, { value: "remaining", label: "Remaining weight" }]} />
       </div>
       <table className="ledger-table">
         <thead><tr><th>Item description</th><th>Detail</th><th>Lot no</th><th>Width</th><th>Supplier</th><th>Status</th><th>Purchased by</th><th>Remaining</th><th>Weight</th></tr></thead>
@@ -1899,16 +1911,21 @@ function Style() {
   return (
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@500&display=swap');
-      .app-shell { --ink:#23261F; --paper:#EFEEE6; --paper-2:#F8F7F2; --line:#CBC6B6;
+      :root { --ink:#23261F; --paper:#EFEEE6; --paper-2:#F8F7F2; --line:#CBC6B6;
         --rust:#A8471E; --rust-bg:#F3E2D6; --mill:#2B4C6F; --mill-bg:#DCE4EC;
-        --moss:#4A7856; --moss-bg:#E1EADD; --gray-bg:#E7E5DC; --danger:#A32D2D;
-        font-family:'IBM Plex Sans',sans-serif; color:var(--ink); background:var(--paper);
-        border-radius:12px; padding:0; max-width:100%; overflow:hidden; border:1px solid var(--line); }
+        --moss:#4A7856; --moss-bg:#E1EADD; --gray-bg:#E7E5DC; --danger:#A32D2D; }
+      html, body, #root {
+        height: 100% !important; min-height: 100% !important; margin: 0 !important; padding: 0 !important;
+        max-width: none !important; width: 100% !important; text-align: left !important;
+        background: #EFEEE6 !important; color: #23261F !important;
+      }
+      .app-shell { font-family:'IBM Plex Sans',sans-serif; color:var(--ink); background:var(--paper);
+        border-radius:0; padding:0; max-width:100%; min-height:100vh; border:none; }
       .loading-shell { display:flex; align-items:center; gap:10px; justify-content:center; padding:48px 0; color:#6b6a5e; }
       .spin { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
       .app-header { display:flex; justify-content:space-between; align-items:flex-end; padding:22px 24px 16px; border-bottom:2px solid var(--ink); background:var(--paper-2); }
       .eyebrow { font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--rust); margin-bottom:4px; }
-      .app-header h1 { font-family:'Oswald',sans-serif; font-weight:600; font-size:26px; margin:0; text-transform:uppercase; letter-spacing:.02em; }
+      .app-header h1 { font-family:'Oswald',sans-serif; font-weight:600; font-size:26px; margin:0; text-transform:uppercase; letter-spacing:.02em; color:#23261F !important; }
       .header-note { font-size:11px; color:#7a7869; max-width:220px; text-align:right; }
       .header-user { display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
       .header-signout { padding:5px 10px; font-size:11px; }
@@ -2018,16 +2035,17 @@ function Style() {
       .team-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:12px 14px; border:1px solid var(--line); border-radius:8px; margin-bottom:8px; background:#fff; }
       .team-row-name { font-weight:500; font-size:13px; min-width:140px; }
       .team-perm { margin:0; white-space:nowrap; }
-      .login-shell { display:flex; align-items:center; justify-content:center; min-height:70vh; padding:24px; }
+      html, body, #root { height: 100%; margin: 0; }
+      .login-page { display:flex; align-items:center; justify-content:center; min-height:100vh; width:100%; padding:24px; box-sizing:border-box; background:var(--paper, #EFEEE6); }
+      .boot-loader { display:flex; align-items:center; gap:10px; color:#6b6a5e; }
       .login-card { max-width:380px; width:100%; display:flex; flex-direction:column; gap:14px; background:var(--paper-2); border:1px solid var(--line); border-radius:14px; padding:32px 28px; }
-      .login-title { font-family:'Oswald',sans-serif; font-size:22px; text-transform:uppercase; margin:0; }
+      .login-title { font-family:'Oswald',sans-serif; font-size:22px; text-transform:uppercase; margin:0; color:#23261F !important; }
       .login-sub { font-size:13px; color:#6b6a5e; margin-bottom:4px; }
       .login-error { font-size:12.5px; color:var(--danger); background:#f6e3e3; border:1px solid var(--danger); border-radius:6px; padding:9px 11px; }
       .login-notice { font-size:12.5px; color:var(--moss); background:var(--moss-bg); border:1px solid var(--moss); border-radius:6px; padding:9px 11px; }
       .login-submit { justify-content:center; }
-      .login-switch { background:none; border:none; color:var(--mill); font-size:12.5px; cursor:pointer; text-decoration:underline; padding:0; text-align:left; }
-      .login-hint { font-size:11px; color:#8a8879; line-height:1.5; margin-top:6px; }
-    /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
+      .login-switch { background:none; border:none; color:var(--mill, #2B4C6F); font-size:12.5px; cursor:pointer; text-decoration:underline; padding:0; text-align:left; }
+          /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
 
 input,
 textarea,
@@ -2098,6 +2116,7 @@ textarea:focus {
         .app-header { flex-direction:column; align-items:flex-start; gap:6px; } .header-note { text-align:left; }
         .header-user { align-items:flex-start; }
         .filter-bar { flex-direction:column; }
+      }
     `}</style>
   );
 }
