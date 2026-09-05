@@ -67,9 +67,11 @@ async function syncTable(table, prevArr, nextArr) {
   toUpdate.forEach((x) => ops.push(sbUpdate(table, x.id, x)));
   await Promise.all(ops);
 }
-async function saveRefreshToken(token) { try { localStorage.setItem("sbs-refresh-token", token); } catch (e) {} }
-async function loadRefreshToken() { try { return localStorage.getItem("sbs-refresh-token"); } catch (e) { return null; } }
-async function clearRefreshToken() { try { localStorage.removeItem("sbs-refresh-token"); } catch (e) {} }
+// sessionStorage: survives a page reload (F5) in the same tab, but a fresh tab/new
+// window (e.g. opening the link again) starts with no session — sign-in required.
+async function saveRefreshToken(token) { try { sessionStorage.setItem("sbs-refresh-token", token); } catch (e) {} }
+async function loadRefreshToken() { try { return sessionStorage.getItem("sbs-refresh-token"); } catch (e) { return null; } }
+async function clearRefreshToken() { try { sessionStorage.removeItem("sbs-refresh-token"); } catch (e) {} }
 async function authRecover(email) { return sbRequest("/auth/v1/recover", { method: "POST", body: { email } }); }
 
 const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() :
@@ -218,10 +220,10 @@ function LotPicker({ rowKey, lots, value, onChange, labelFn, placeholder }) {
     else if (v.trim() === "") onChange("");
   };
   return (
-    <>
-      <input list={listId} value={query} onChange={handleChange} placeholder={placeholder || "Search lot no / brand / gsm…"} />
+    <div className="lot-picker">
+      <input list={listId} value={query} onChange={handleChange} placeholder={placeholder === undefined ? "Search lot no / brand / gsm…" : placeholder} />
       <datalist id={listId}>{lots.map((l) => <option key={l.id} value={labelFn(l)} />)}</datalist>
-    </>
+    </div>
   );
 }
 
@@ -1091,10 +1093,10 @@ function PurchasesAddForm({ ctx }) {
             const amt = weight * Number(r.rate || 0);
             return (
               <div className="rows-line cols-5" key={r.key}>
-                <LotPicker rowKey={r.key} lots={eligible} value={r.lotId} onChange={(id) => updateRow(r.key, { lotId: id })} labelFn={labelFn} />
+                <LotPicker rowKey={r.key} lots={eligible} value={r.lotId} onChange={(id) => updateRow(r.key, { lotId: id })} labelFn={labelFn} placeholder="" />
                 <span className="static-cell">{lot ? num(weight) + " kg" : "—"}</span>
-                <input type="number" value={r.rate} onChange={(e) => updateRow(r.key, { rate: e.target.value })} placeholder="276" />
-                <input value={r.purchasedBy} onChange={(e) => updateRow(r.key, { purchasedBy: e.target.value })} placeholder="e.g. Ahmed" />
+                <input type="number" value={r.rate} onChange={(e) => updateRow(r.key, { rate: e.target.value })} />
+                <input value={r.purchasedBy} onChange={(e) => updateRow(r.key, { purchasedBy: e.target.value })} />
                 <span className="static-cell mono-tag">{money(amt)}</span>
               </div>
             );
@@ -1861,6 +1863,8 @@ function ReelsQuantityTab({ ctx }) {
     if (sort.field === "qty") return (a.qty - b.qty) * dir;
     if (sort.field === "weight") return (a.sumWeight - b.sumWeight) * dir;
     if (sort.field === "remaining") return (a.sumRemaining - b.sumRemaining) * dir;
+    if (sort.field === "description") return a.description.localeCompare(b.description) * dir;
+    if (sort.field === "width") return (Number(a.width) - Number(b.width)) * dir;
     return a.description.localeCompare(b.description);
   });
   const totalQty = sorted.reduce((a, g) => a + g.qty, 0);
@@ -1885,7 +1889,7 @@ function ReelsQuantityTab({ ctx }) {
         <Field label="Status"><MultiSelect options={statusOptions} values={statusFilter} onChange={setStatusFilter} /></Field>
         <Field label="From"><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
         <Field label="To"><input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
-        <SortControl value={sort} onChange={setSort} options={[{ value: "qty", label: "Reels quantity" }, { value: "weight", label: "Total weight" }, { value: "remaining", label: "Total remaining" }]} />
+        <SortControl value={sort} onChange={setSort} options={[{ value: "qty", label: "Reels quantity" }, { value: "description", label: "Item description" }, { value: "width", label: "Width" }, { value: "weight", label: "Total weight" }, { value: "remaining", label: "Total remaining" }]} />
       </div>
       <table className="ledger-table">
         <thead><tr><th>Item description</th><th>Width</th><th>Reels quantity</th><th>Total weight</th><th>Total remaining</th></tr></thead>
@@ -1911,6 +1915,7 @@ function Style() {
   return (
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@500&display=swap');
+      *, *::before, *::after { box-sizing: border-box; }
       :root { --ink:#23261F; --paper:#EFEEE6; --paper-2:#F8F7F2; --line:#CBC6B6;
         --rust:#A8471E; --rust-bg:#F3E2D6; --mill:#2B4C6F; --mill-bg:#DCE4EC;
         --moss:#4A7856; --moss-bg:#E1EADD; --gray-bg:#E7E5DC; --danger:#A32D2D; }
@@ -1982,6 +1987,7 @@ function Style() {
       .rows-head.cols-7, .rows-line.cols-7 { grid-template-columns:.9fr 1.1fr .6fr .6fr .8fr 1fr 30px; }
       .rows-head span { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#8a8879; font-weight:600; }
       .rows-line input, .rows-line select { font-family:'IBM Plex Mono',monospace; font-size:12.5px; padding:8px 9px; border:1px solid var(--line); border-radius:6px; background:#fff; width:100%; }
+      .lot-picker { width:100%; min-width:0; }
       .static-cell { font-size:12.5px; padding:8px 4px; }
       .static-cell.danger { color: var(--danger); }
       .alert-note { font-size:10.5px; color:var(--danger); margin-top:4px; }
@@ -2045,7 +2051,7 @@ function Style() {
       .login-notice { font-size:12.5px; color:var(--moss); background:var(--moss-bg); border:1px solid var(--moss); border-radius:6px; padding:9px 11px; }
       .login-submit { justify-content:center; }
       .login-switch { background:none; border:none; color:var(--mill, #2B4C6F); font-size:12.5px; cursor:pointer; text-decoration:underline; padding:0; text-align:left; }
-          /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
+    /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
 
 input,
 textarea,
@@ -2058,7 +2064,7 @@ select {
 input::placeholder,
 textarea::placeholder {
   color: #777777 !important;
-  opacity: 1;
+  opacity: 0.5;
 }
 
 /* All text areas */
