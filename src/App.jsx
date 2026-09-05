@@ -85,6 +85,7 @@ const num = (n, d = 2) => (Number(n) || 0).toLocaleString("en-PK", { minimumFrac
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const confirmDelete = (label) => window.confirm(`Delete ${label || "this"}? This can't be undone.`);
 
 const STATUS_LABEL = { consignment: "In godown", partial: "Partly converted", converted: "Fully converted", purchased: "Purchased" };
 const STATUS_TONE = { consignment: "gray", partial: "amber", converted: "blue", purchased: "green" };
@@ -362,13 +363,13 @@ function AuthedApp({ session, onSignOut }) {
   }, [session]);
 
   const persist = {
-    suppliers: (v) => { const p = suppliers; setSuppliers(v); syncTable("suppliers", p, v).catch((e) => alert("Save failed: " + e.message)); },
-    brands: (v) => { const p = brands; setBrands(v); syncTable("brands", p, v).catch((e) => alert("Save failed: " + e.message)); },
-    sizes: (v) => { const p = sizes; setSizes(v); syncTable("sizes", p, v).catch((e) => alert("Save failed: " + e.message)); },
-    reels: (v) => { const p = reels; setReels(v); syncTable("reels", p, v).catch((e) => alert("Save failed: " + e.message)); },
-    purchases: (v) => { const p = purchases; setPurchases(v); syncTable("purchases", p, v).catch((e) => alert("Save failed: " + e.message)); },
-    productions: (v) => { const p = productions; setProductions(v); syncTable("productions", p, v).catch((e) => alert("Save failed: " + e.message)); },
-    productionItems: (v) => { const p = productionItems; setProductionItems(v); syncTable("production_items", p, v).catch((e) => alert("Save failed: " + e.message)); },
+    suppliers: (v) => { const p = suppliers; setSuppliers(v); return syncTable("suppliers", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    brands: (v) => { const p = brands; setBrands(v); return syncTable("brands", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    sizes: (v) => { const p = sizes; setSizes(v); return syncTable("sizes", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    reels: (v) => { const p = reels; setReels(v); return syncTable("reels", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    purchases: (v) => { const p = purchases; setPurchases(v); return syncTable("purchases", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    productions: (v) => { const p = productions; setProductions(v); return syncTable("productions", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    productionItems: (v) => { const p = productionItems; setProductionItems(v); return syncTable("production_items", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
   };
 
   const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || "—";
@@ -386,6 +387,32 @@ function AuthedApp({ session, onSignOut }) {
   const usedWeightForLot = (lotId, excludeProductionId) => productions
     .filter((p) => p.lotId === lotId && p.id !== excludeProductionId)
     .reduce((a, p) => a + itemsWeightFor(p.id) + Number(p.wastageKg || 0), 0);
+
+  // cumulative weight remaining on a lot as of a specific production entry (i.e. after
+  // that entry and everything before it, in the order entries were made) — used so
+  // historical entries show what was actually left at that point, not the final state
+  const remainingAfterProduction = (productionId) => {
+    const p = productions.find((x) => x.id === productionId);
+    if (!p) return 0;
+    const lot = reels.find((r) => r.id === p.lotId);
+    if (!lot) return 0;
+    const purchase = purchases.find((x) => x.lotId === p.lotId);
+    if (purchase) return 0;
+    const idx = productions.findIndex((x) => x.id === productionId);
+    const upToHere = productions.filter((x, i) => x.lotId === p.lotId && i <= idx);
+    const closedByHere = upToHere.some((x) => x.closeOut);
+    if (closedByHere) return 0;
+    const usedUpToHere = upToHere.reduce((a, x) => a + itemsWeightFor(x.id) + Number(x.wastageKg || 0), 0);
+    return Math.max(0, Number(lot.weight) - usedUpToHere);
+  };
+
+  // total packet weight ever produced from a lot, across every production entry — used
+  // for a lot-wide average gram rather than one that resets per entry
+  const totalPacketWeightForLot = (lotId) => productions
+    .filter((p) => p.lotId === lotId)
+    .reduce((a, p) => a + itemsWeightFor(p.id), 0);
+
+  const avgGramForLot = (lot) => avgGramForEntry(lot, totalPacketWeightForLot(lot.id));
 
   const lotInfo = useMemo(() => {
     const map = {};
@@ -443,9 +470,9 @@ function AuthedApp({ session, onSignOut }) {
 
   const ctx = {
     suppliers, brands, sizes, reels, purchases, productions, productionItems, persist,
-    supplierName, brandName, packetWeightKg, sizeLabel, reelDesc, avgGramForEntry, itemsFor, itemsWeightFor,
-    lotInfo, totals, usedWeightForLot, remainingForLot, reelLabelMap, purchaseLabelMap, productionLabelMap,
-    profile, can, isAdmin,
+    supplierName, brandName, packetWeightKg, sizeLabel, reelDesc, avgGramForEntry, avgGramForLot, itemsFor, itemsWeightFor,
+    lotInfo, totals, usedWeightForLot, remainingForLot, remainingAfterProduction, totalPacketWeightForLot,
+    reelLabelMap, purchaseLabelMap, productionLabelMap, profile, can, isAdmin,
   };
 
   const tabs = isAdmin ? [...TABS, { id: "team", label: "Team", icon: Users }] : TABS;
@@ -546,7 +573,7 @@ function Dashboard({ ctx }) {
     { label: "Reel lots on record", value: reels.length },
     { label: "In-godown weight (unpurchased)", value: num(totals.godownWeight) + " kg" },
     { label: "Total purchased value", value: money(totals.purchaseValue) },
-    { label: "Packets produced", value: num(totals.packetsProduced, 0) },
+    { label: "Packets produced", value: num(totals.packetsProduced) },
     { label: "Suppliers / sizes on file", value: `${suppliers.length} / ${sizes.length}` },
   ];
   return (
@@ -591,7 +618,7 @@ function NameListEditor({ title, items, setItems, withContact, blockedIds, place
   const add = () => { if (!name.trim()) return; setItems([...items, { id: uid(), name: name.trim(), contact: contact.trim() }]); setName(""); setContact(""); };
   const startEdit = (it) => { setEditId(it.id); setEditName(it.name); setEditContact(it.contact || ""); };
   const saveEdit = () => { if (!editName.trim()) return; setItems(items.map((it) => it.id === editId ? { ...it, name: editName.trim(), contact: editContact.trim() } : it)); setEditId(null); };
-  const remove = (id) => { if (blockedIds.includes(id)) return; setItems(items.filter((it) => it.id !== id)); };
+  const remove = (id) => { if (blockedIds.includes(id)) return; if (!confirmDelete(title.slice(0, -1))) return; setItems(items.filter((it) => it.id !== id)); };
   return (
     <div>
       <SectionHead title={title} />
@@ -644,7 +671,7 @@ function SizesEditor({ ctx, canManage, isAdmin }) {
   const startEdit = (sz) => { setEditId(sz.id); setEf({ width: sz.width, length: sz.length, gsm: sz.gsm, brandId: sz.brandId }); };
   const saveEdit = () => { persist.sizes(sizes.map((s) => s.id === editId ? { ...s, width: Number(ef.width), length: Number(ef.length), gsm: Number(ef.gsm), brandId: ef.brandId } : s)); setEditId(null); };
   const inUse = (id) => productionItems.some((it) => it.sizeId === id);
-  const remove = (id) => { if (inUse(id)) return; persist.sizes(sizes.filter((s) => s.id !== id)); };
+  const remove = (id) => { if (inUse(id)) return; if (!confirmDelete("this size")) return; persist.sizes(sizes.filter((s) => s.id !== id)); };
 
   if (brands.length === 0) return <div><SectionHead title="Packet sizes" /><EmptyRow>Add a brand first — sizes are tied to a brand.</EmptyRow></div>;
 
@@ -709,6 +736,8 @@ function ReelsAddForm({ ctx }) {
   const { suppliers, brands, reels, persist, reelLabelMap } = ctx;
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id || "");
   const [date, setDate] = useState(todayISO());
+  const [biltyWeight, setBiltyWeight] = useState("");
+  const [loadingChargePerKg, setLoadingChargePerKg] = useState("");
   const blankRow = () => ({ key: uid(), lotNo: "", brandId: brands[0]?.id || "", gsm: "", width: "", weight: "", detail: "" });
   const [rows, setRows] = useState([blankRow()]);
   const [lastSaved, setLastSaved] = useState(null);
@@ -718,6 +747,7 @@ function ReelsAddForm({ ctx }) {
   const updateRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blankRow()]);
   const removeRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
+  const loadingChargesTotal = (Number(biltyWeight || 0) / 1000) * Number(loadingChargePerKg || 0);
 
   const saveAll = () => {
     if (!supplierId || !date) return;
@@ -728,11 +758,12 @@ function ReelsAddForm({ ctx }) {
     const newOnes = valid.filter((r) => !existingLots.has(r.lotNo.trim())).map((r) => ({
       id: uid(), batchId, lotNo: r.lotNo.trim(), supplierId, brandId: r.brandId, gsm: Number(r.gsm), width: Number(r.width),
       weight: Number(r.weight), detail: r.detail.trim(), date,
+      biltyWeight: Number(biltyWeight || 0), loadingChargePerKg: Number(loadingChargePerKg || 0),
     }));
     if (newOnes.length === 0) return;
     persist.reels([...reels, ...newOnes]);
     setLastSaved({ count: newOnes.length, batchId });
-    setRows([blankRow()]);
+    setRows([blankRow()]); setBiltyWeight(""); setLoadingChargePerKg("");
   };
 
   const disabled = suppliers.length === 0 || brands.length === 0;
@@ -746,6 +777,13 @@ function ReelsAddForm({ ctx }) {
             <Field label="Supplier"><select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
             <Field label="Date received"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
           </div>
+          <div className="grid-2">
+            <Field label="Bilty weight (kg)"><input type="number" value={biltyWeight} onChange={(e) => setBiltyWeight(e.target.value)} placeholder="0" /></Field>
+            <Field label="Loading/unloading charges (per kg)"><input type="number" value={loadingChargePerKg} onChange={(e) => setLoadingChargePerKg(e.target.value)} placeholder="0" /></Field>
+          </div>
+          {(Number(biltyWeight) > 0 || Number(loadingChargePerKg) > 0) && (
+            <div className="computed">Loading charges for this entry: <b>{money(loadingChargesTotal)}</b> — bilty weight ÷ 1000 × rate per kg</div>
+          )}
           <FormDivider label="Reels in this entry" />
           <div className="rows-table">
             <div className="rows-head cols-7"><span>Lot no</span><span>Brand</span><span>Gram</span><span>Width</span><span>Weight (kg)</span><span>Detail / ref</span><span /></div>
@@ -778,14 +816,15 @@ function ReelsEntriesTab({ ctx }) {
   const canAdd = ctx.can("canAddEntries");
   const canDelete = ctx.can("canDeleteEntries");
   const canEdit = ctx.can("canEditEntries");
-  const [editDateBatch, setEditDateBatch] = useState(null);
-  const [dateDraft, setDateDraft] = useState("");
+  const [editBatch, setEditBatch] = useState(null);
+  const [draft, setDraft] = useState({ date: "", biltyWeight: "", loadingChargePerKg: "" });
 
   const batches = useMemo(() => {
     const map = new Map();
     reels.forEach((lot) => { if (!map.has(lot.batchId)) map.set(lot.batchId, []); map.get(lot.batchId).push(lot); });
     return [...map.entries()].map(([batchId, lots]) => ({
       batchId, label: reelLabelMap.get(batchId), date: lots[0].date, supplierId: lots[0].supplierId, lots,
+      biltyWeight: Number(lots[0].biltyWeight || 0), loadingChargePerKg: Number(lots[0].loadingChargePerKg || 0),
       totalWeight: lots.reduce((a, l) => a + Number(l.weight), 0),
     })).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   }, [reels, reelLabelMap]);
@@ -793,13 +832,14 @@ function ReelsEntriesTab({ ctx }) {
   const deleteEntry = (batchId) => {
     const lots = reels.filter((r) => r.batchId === batchId);
     if (lots.some((l) => lotInfo[l.id].status !== "consignment")) return;
+    if (!confirmDelete(`this entry (${lots.length} reel${lots.length > 1 ? "s" : ""})`)) return;
     persist.reels(reels.filter((r) => r.batchId !== batchId));
   };
-  const startEditDate = (b) => { setEditDateBatch(b.batchId); setDateDraft(b.date); };
-  const saveEntryDate = (batchId) => {
-    if (!dateDraft) return;
-    persist.reels(reels.map((r) => r.batchId === batchId ? { ...r, date: dateDraft } : r));
-    setEditDateBatch(null);
+  const startEdit = (b) => { setEditBatch(b.batchId); setDraft({ date: b.date, biltyWeight: b.biltyWeight || "", loadingChargePerKg: b.loadingChargePerKg || "" }); };
+  const saveEntry = (batchId) => {
+    if (!draft.date) return;
+    persist.reels(reels.map((r) => r.batchId === batchId ? { ...r, date: draft.date, biltyWeight: Number(draft.biltyWeight || 0), loadingChargePerKg: Number(draft.loadingChargePerKg || 0) } : r));
+    setEditBatch(null);
   };
 
   return (
@@ -811,26 +851,29 @@ function ReelsEntriesTab({ ctx }) {
       {batches.map((b) => {
         const blocked = b.lots.some((l) => lotInfo[l.id].status !== "consignment");
         const isOpen = expanded === b.batchId;
-        const isEditingDate = editDateBatch === b.batchId;
+        const isEditing = editBatch === b.batchId;
+        const loadingChargesTotal = (b.biltyWeight / 1000) * b.loadingChargePerKg;
         return (
           <div className="entry-card" key={b.batchId}>
-            <div className="entry-card-head" onClick={() => !isEditingDate && setExpanded(isOpen ? null : b.batchId)}>
+            <div className="entry-card-head" onClick={() => !isEditing && setExpanded(isOpen ? null : b.batchId)}>
               <div className="entry-card-title">
                 {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 <span className="mono-tag entry-tag">{b.label}</span>
-                {isEditingDate ? (
+                {isEditing ? (
                   <span className="entry-date-edit" onClick={(e) => e.stopPropagation()}>
-                    <input type="date" value={dateDraft} onChange={(e) => setDateDraft(e.target.value)} />
-                    <button className="icon-btn" onClick={() => saveEntryDate(b.batchId)}><Check size={14} /></button>
-                    <button className="icon-btn" onClick={() => setEditDateBatch(null)}><X size={14} /></button>
+                    <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} />
+                    <input type="number" placeholder="Bilty wt (kg)" value={draft.biltyWeight} onChange={(e) => setDraft({ ...draft, biltyWeight: e.target.value })} style={{ width: 110 }} />
+                    <input type="number" placeholder="Loading/kg" value={draft.loadingChargePerKg} onChange={(e) => setDraft({ ...draft, loadingChargePerKg: e.target.value })} style={{ width: 100 }} />
+                    <button className="icon-btn" onClick={() => saveEntry(b.batchId)}><Check size={14} /></button>
+                    <button className="icon-btn" onClick={() => setEditBatch(null)}><X size={14} /></button>
                   </span>
                 ) : (
-                  <span>{fmtDate(b.date)} · {supplierName(b.supplierId)} · {b.lots.length} reel{b.lots.length > 1 ? "s" : ""} · {num(b.totalWeight)} kg</span>
+                  <span>{fmtDate(b.date)} · {supplierName(b.supplierId)} · {b.lots.length} reel{b.lots.length > 1 ? "s" : ""} · {num(b.totalWeight)} kg{loadingChargesTotal > 0 ? ` · loading charges ${money(loadingChargesTotal)}` : ""}</span>
                 )}
               </div>
-              {!isEditingDate && (
+              {!isEditing && (
                 <div className="row-actions">
-                  {canEdit && <button className="icon-btn" onClick={(e) => { e.stopPropagation(); startEditDate(b); }} title="Edit entry date"><Pencil size={15} /></button>}
+                  {canEdit && <button className="icon-btn" onClick={(e) => { e.stopPropagation(); startEdit(b); }} title="Edit entry (date / bilty / loading charges)"><Pencil size={15} /></button>}
                   {canDelete && (
                     <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteEntry(b.batchId); }}
                       disabled={blocked} title={blocked ? "Some reels in this entry are already purchased/converted" : "Delete entire entry"}>
@@ -842,6 +885,9 @@ function ReelsEntriesTab({ ctx }) {
             </div>
             {isOpen && (
               <div className="entry-card-body">
+                {(b.biltyWeight > 0 || b.loadingChargePerKg > 0) && (
+                  <div className="row-sub" style={{ marginBottom: 8 }}>Bilty weight {num(b.biltyWeight)} kg · Loading/unloading {num(b.loadingChargePerKg)}/kg · Total {money(loadingChargesTotal)}</div>
+                )}
                 {b.lots.map((lot) => {
                   const info = lotInfo[lot.id];
                   return (
@@ -891,17 +937,32 @@ function ReelsReportView({ ctx }) {
   const groups = groupByDate(filtered);
   const getters = { weight: (l) => Number(l.weight), remaining: (l) => lotInfo[l.id].remaining };
 
+  // bilty weight & loading charges are per ENTRY (batch), duplicated across its lots —
+  // dedupe by batchId so a multi-reel entry isn't counted more than once
+  const loadingChargesFor = (lots) => {
+    const seen = new Set(); let total = 0;
+    lots.forEach((lot) => {
+      if (seen.has(lot.batchId)) return;
+      seen.add(lot.batchId);
+      total += (Number(lot.biltyWeight || 0) / 1000) * Number(lot.loadingChargePerKg || 0);
+    });
+    return total;
+  };
+  const grandLoadingCharges = loadingChargesFor(filtered);
+
   const doPrint = () => {
     let html = "";
     groups.forEach(([d, lots]) => {
       const sorted = sortWithin(lots, sort, getters);
-      html += `<h2>${esc(fmtDate(d))} — ${lots.length} reel(s)</h2><table><thead><tr><th>Entry</th><th>Item description</th><th>Lot no</th><th>Width</th><th>Supplier</th><th>Status</th><th>Received</th><th>Remaining</th></tr></thead><tbody>`;
+      const dateCharges = loadingChargesFor(lots);
+      html += `<h2>${esc(fmtDate(d))} — ${lots.length} reel(s)${dateCharges > 0 ? ` — loading charges ${money(dateCharges)}` : ""}</h2><table><thead><tr><th>Entry</th><th>Item description</th><th>Lot no</th><th>Width</th><th>Supplier</th><th>Status</th><th>Received</th><th>Remaining</th></tr></thead><tbody>`;
       sorted.forEach((lot) => {
         const info = lotInfo[lot.id];
         html += `<tr><td class="tag">${esc(reelLabelMap.get(lot.batchId))}</td><td>${esc(reelDesc(lot))}</td><td class="tag">${esc(lot.lotNo)}</td><td>${esc(lot.width)}</td><td>${esc(supplierName(lot.supplierId))}</td><td>${esc(statusLabel(info.status))}</td><td>${num(lot.weight)} kg</td><td>${num(info.remaining)} kg</td></tr>`;
       });
       html += `</tbody></table>`;
     });
+    if (grandLoadingCharges > 0) html += `<h2>Grand total loading charges — ${money(grandLoadingCharges)}</h2>`;
     printHTML("Reels in report", html || "<p>No entries.</p>");
   };
 
@@ -919,9 +980,10 @@ function ReelsReportView({ ctx }) {
       {groups.length === 0 && <EmptyRow>No reels match this filter.</EmptyRow>}
       {groups.map(([d, lots]) => {
         const sorted = sortWithin(lots, sort, getters);
+        const dateCharges = loadingChargesFor(lots);
         return (
           <div key={d} className="date-block">
-            <div className="date-block-head">{fmtDate(d)} <span>{lots.length} reel{lots.length > 1 ? "s" : ""}</span></div>
+            <div className="date-block-head">{fmtDate(d)} <span>{lots.length} reel{lots.length > 1 ? "s" : ""}{dateCharges > 0 ? ` · loading charges ${money(dateCharges)}` : ""}</span></div>
             <table className="ledger-table">
               <thead><tr><th /><th>Entry</th><th>Item description</th><th>Lot no</th><th>Width</th><th>Supplier</th><th>Status</th><th>Received</th><th>Remaining</th></tr></thead>
               <tbody>
@@ -947,7 +1009,7 @@ function ReelsReportView({ ctx }) {
                                 {itemsFor(p.id).map((it) => {
                                   const sz = sizes.find((s) => s.id === it.sizeId);
                                   const w = sz ? Number(it.packetsProduced) * packetWeightKg(sz) : 0;
-                                  return <div className="detail-line" key={it.id} style={{ paddingLeft: 14 }}>— {num(it.packetsProduced, 0)} × {sz ? sizeLabel(sz) : "removed size"} = {num(w)} kg</div>;
+                                  return <div className="detail-line" key={it.id} style={{ paddingLeft: 14 }}>— {num(it.packetsProduced)} × {sz ? sizeLabel(sz) : "removed size"} = {num(w)} kg</div>;
                                 })}
                               </div>
                             ))}
@@ -965,6 +1027,12 @@ function ReelsReportView({ ctx }) {
           </div>
         );
       })}
+      {grandLoadingCharges > 0 && (
+        <div className="report-grand-total">
+          <span>Grand total loading charges</span>
+          <span className="mono">{money(grandLoadingCharges)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -981,7 +1049,7 @@ function ReelsEditTab({ ctx }) {
     persist.reels(reels.map((r) => r.id === editId ? { ...r, lotNo: ef.lotNo.trim(), supplierId: ef.supplierId, brandId: ef.brandId, gsm: Number(ef.gsm), width: Number(ef.width), weight: Number(ef.weight), detail: ef.detail.trim(), date: ef.date } : r));
     setEditId(null);
   };
-  const removeLot = (id) => { if (lotInfo[id]?.status !== "consignment") return; persist.reels(reels.filter((r) => r.id !== id)); };
+  const removeLot = (id) => { if (lotInfo[id]?.status !== "consignment") return; if (!confirmDelete("this reel")) return; persist.reels(reels.filter((r) => r.id !== id)); };
 
   const filtered = reels.filter((lot) => {
     if (!q.trim()) return true;
@@ -1131,7 +1199,7 @@ function PurchasesEntriesTab({ ctx }) {
     })).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   }, [purchases, purchaseLabelMap]);
 
-  const deleteEntry = (batchId) => persist.purchases(purchases.filter((p) => p.batchId !== batchId));
+  const deleteEntry = (batchId) => { if (!confirmDelete("this purchase entry")) return; persist.purchases(purchases.filter((p) => p.batchId !== batchId)); };
   const startEditDate = (b) => { setEditDateBatch(b.batchId); setDateDraft(b.date); };
   const saveEntryDate = (batchId) => {
     if (!dateDraft) return;
@@ -1296,7 +1364,7 @@ function PurchaseEditTab({ ctx }) {
     persist.purchases(purchases.map((p) => p.id === editId ? { ...p, lotId: ef.lotId, weight, rate: Number(ef.rate), purchasedBy: ef.purchasedBy.trim(), date: ef.date } : p));
     setEditId(null);
   };
-  const remove = (id) => persist.purchases(purchases.filter((p) => p.id !== id));
+  const remove = (id) => { if (!confirmDelete("this purchase")) return; persist.purchases(purchases.filter((p) => p.id !== id)); };
 
   const filtered = purchases.filter((p) => {
     if (!q.trim()) return true;
@@ -1377,6 +1445,7 @@ function ProductionAddForm({ ctx }) {
   const blankItem = () => ({ key: uid(), sizeId: sizes[0]?.id || "", packetsProduced: "" });
   const [items, setItems] = useState([blankItem()]);
   const [lastSaved, setLastSaved] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   const eligible = reels.filter((r) => lotInfo[r.id]?.available);
   const labelFn = (l) => `${reelDesc(l)} · Lot ${l.lotNo} · ${num(lotInfo[l.id].remaining)} kg available`;
@@ -1393,14 +1462,22 @@ function ProductionAddForm({ ctx }) {
   const remainingAfter = capacity - totalUsed;
   const ok = lot && totalUsed > 0 && remainingAfter >= -0.001;
 
-  const saveAll = () => {
+  const saveAll = async () => {
+    if (saving) return; // guard against double-click / double-submit races
     const validItems = items.filter((it) => it.sizeId && it.packetsProduced);
     if (!lot || !date || validItems.length === 0 || !ok) return;
+    setSaving(true);
     const productionId = uid();
-    persist.productions([...productions, { id: productionId, lotId, wastageKg: Number(wastageKg || 0), closeOut, date }]);
-    persist.productionItems([...productionItems, ...validItems.map((it) => ({ id: uid(), productionId, sizeId: it.sizeId, packetsProduced: Number(it.packetsProduced) }))]);
+    try {
+      await persist.productions([...productions, { id: productionId, lotId, wastageKg: Number(wastageKg || 0), closeOut, date }]);
+      await persist.productionItems([...productionItems, ...validItems.map((it) => ({ id: uid(), productionId, sizeId: it.sizeId, packetsProduced: Number(it.packetsProduced) }))]);
+    } catch (e) {
+      setSaving(false);
+      return; // persist already alerted; don't clear the form so nothing is lost
+    }
     setLastSaved({ productionId });
     setLotId(""); setWastageKg(""); setCloseOut(false); setItems([blankItem()]);
+    setSaving(false);
   };
 
   const disabled = sizes.length === 0;
@@ -1432,7 +1509,7 @@ function ProductionAddForm({ ctx }) {
                 <select value={it.sizeId} onChange={(e) => updateItem(it.key, { sizeId: e.target.value })}>
                   {sizes.map((s) => <option key={s.id} value={s.id}>{sizeLabel(s)}</option>)}
                 </select>
-                <input type="number" value={it.packetsProduced} onChange={(e) => updateItem(it.key, { packetsProduced: e.target.value })} placeholder="300" />
+                <input type="number" step="any" value={it.packetsProduced} onChange={(e) => updateItem(it.key, { packetsProduced: e.target.value })} placeholder="300" />
                 <span className="static-cell mono-tag">{num(itemWeight(it))} kg</span>
                 <button className="icon-btn" onClick={() => removeItem(it.key)}><Trash2 size={15} /></button>
               </div>
@@ -1440,7 +1517,7 @@ function ProductionAddForm({ ctx }) {
           </div>
           <div className="form-actions">
             <button className="btn" onClick={addItem}><Plus size={14} /> Add packet size</button>
-            <button className="btn primary" onClick={saveAll} disabled={!ok}>Save production for this date</button>
+            <button className="btn primary" onClick={saveAll} disabled={!ok || saving}>{saving ? "Saving…" : "Save production for this date"}</button>
           </div>
           {lastSaved && <div className="computed">Saved under production id <b>{productionLabelMap.get(lastSaved.productionId)}</b>. See the list below.</div>}
         </div>
@@ -1461,6 +1538,7 @@ function ProductionEntriesTab({ ctx }) {
   const sorted = [...productions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
   const deleteEntry = (id) => {
+    if (!confirmDelete("this production entry")) return;
     ctx.persist.productions(productions.filter((p) => p.id !== id));
     ctx.persist.productionItems(ctx.productionItems.filter((it) => it.productionId !== id));
   };
@@ -1515,7 +1593,7 @@ function ProductionEntriesTab({ ctx }) {
                   return (
                     <div className="row" key={it.id}>
                       <div>{sz ? sizeLabel(sz) : "removed size"}</div>
-                      <div className="row-sub">{num(it.packetsProduced, 0)} packets = {num(w)} kg</div>
+                      <div className="row-sub">{num(it.packetsProduced)} packets = {num(w)} kg</div>
                     </div>
                   );
                 })}
@@ -1530,7 +1608,7 @@ function ProductionEntriesTab({ ctx }) {
 
 function ProductionReportView({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="You don't have permission to view reports." />;
-  const { reels, sizes, productions, reelDesc, sizeLabel, packetWeightKg, avgGramForEntry, lotInfo, itemsFor, itemsWeightFor, productionLabelMap } = ctx;
+  const { reels, sizes, productions, reelDesc, sizeLabel, packetWeightKg, avgGramForLot, lotInfo, itemsFor, itemsWeightFor, productionLabelMap, remainingAfterProduction } = ctx;
   const [q, setQ] = useState(""); const [from, setFrom] = useState(""); const [to, setTo] = useState("");
   const [sort, setSort] = useState({ field: "entry", dir: "desc" });
 
@@ -1556,14 +1634,13 @@ function ProductionReportView({ ctx }) {
       html += `<h2>${esc(fmtDate(d))}</h2>`;
       sorted.forEach((p) => {
         const lot = reels.find((r) => r.id === p.lotId); if (!lot) return;
-        const totalPktWeight = itemsWeightFor(p.id);
-        const avgGram = avgGramForEntry(lot, totalPktWeight);
-        const info = lotInfo[lot.id];
-        html += `<h3>${esc(productionLabelMap.get(p.id))} — ${esc(reelDesc(lot))} (Lot ${esc(lot.lotNo)}) — wastage ${num(p.wastageKg || 0)} kg — remaining ${num(info.remaining)} kg — avg gram ${num(avgGram)}${p.closeOut ? " — CLOSED OUT" : ""}</h3><table><thead><tr><th>Packet size</th><th>Packets</th><th>Weight used</th></tr></thead><tbody>`;
+        const avgGram = avgGramForLot(lot);
+        const remainingHere = remainingAfterProduction(p.id);
+        html += `<h3>${esc(productionLabelMap.get(p.id))} — ${esc(reelDesc(lot))} (Lot ${esc(lot.lotNo)}) — wastage ${num(p.wastageKg || 0)} kg — remaining after this entry ${num(remainingHere)} kg — avg gram (whole reel) ${num(avgGram)}${p.closeOut ? " — CLOSED OUT" : ""}</h3><table><thead><tr><th>Packet size</th><th>Packets</th><th>Weight used</th></tr></thead><tbody>`;
         itemsFor(p.id).forEach((it) => {
           const sz = sizes.find((s) => s.id === it.sizeId); if (!sz) return;
           const w = Number(it.packetsProduced) * packetWeightKg(sz);
-          html += `<tr><td>${esc(sizeLabel(sz))}</td><td>${num(it.packetsProduced, 0)}</td><td>${num(w)}</td></tr>`;
+          html += `<tr><td>${esc(sizeLabel(sz))}</td><td>${num(it.packetsProduced)}</td><td>${num(w)}</td></tr>`;
         });
         html += `</tbody></table>`;
       });
@@ -1591,14 +1668,14 @@ function ProductionReportView({ ctx }) {
               if (!lot) return null;
               const items = itemsFor(p.id);
               const totalUsed = itemsWeightFor(p.id) + Number(p.wastageKg || 0);
-              const info = lotInfo[lot.id];
+              const remainingHere = remainingAfterProduction(p.id);
               return (
                 <div key={p.id} className="production-block">
                   <div className="production-head">
                     <div>
                       <span className="mono-tag entry-tag">{productionLabelMap.get(p.id)}</span>{" "}
                       <b>{reelDesc(lot)}</b> <span className="mono-tag">Lot {lot.lotNo}</span>
-                      <span className="row-sub"> · wastage {num(p.wastageKg || 0)} kg · total used {num(totalUsed)} kg · remaining {num(info.remaining)} kg · avg gram {num(avgGramForEntry(lot, itemsWeightFor(p.id)))}{p.closeOut ? " · closed out" : ""}</span>
+                      <span className="row-sub"> · wastage {num(p.wastageKg || 0)} kg · total used {num(totalUsed)} kg · remaining after this entry {num(remainingHere)} kg · avg gram (whole reel) {num(avgGramForLot(lot))}{p.closeOut ? " · closed out" : ""}</span>
                     </div>
                   </div>
                   <table className="ledger-table">
@@ -1611,7 +1688,7 @@ function ProductionReportView({ ctx }) {
                         const w = Number(it.packetsProduced) * packetWeightKg(sz);
                         return (
                           <tr key={it.id}>
-                            <td>{sizeLabel(sz)}</td><td className="mono">{num(it.packetsProduced, 0)}</td>
+                            <td>{sizeLabel(sz)}</td><td className="mono">{num(it.packetsProduced)}</td>
                             <td className="mono">{num(w)}</td>
                           </tr>
                         );
@@ -1640,7 +1717,7 @@ function ProductionEditTab({ ctx }) {
   const saveEditHeader = () => { persist.productions(productions.map((p) => p.id === editHeaderId ? { ...p, wastageKg: Number(eh.wastageKg || 0), closeOut: eh.closeOut, date: eh.date } : p)); setEditHeaderId(null); };
   const startEditItem = (it) => { setEditItemId(it.id); setEi({ sizeId: it.sizeId, packetsProduced: it.packetsProduced }); };
   const saveEditItem = () => { persist.productionItems(productionItems.map((it) => it.id === editItemId ? { ...it, sizeId: ei.sizeId, packetsProduced: Number(ei.packetsProduced) } : it)); setEditItemId(null); };
-  const removeItem = (id) => persist.productionItems(productionItems.filter((it) => it.id !== id));
+  const removeItem = (id) => { if (!confirmDelete("this packet size line")) return; persist.productionItems(productionItems.filter((it) => it.id !== id)); };
 
   const filtered = productions.filter((p) => {
     if (!q.trim()) return true;
@@ -1695,7 +1772,7 @@ function ProductionEditTab({ ctx }) {
                           <tr key={it.id}><td colSpan={4}>
                             <div className="edit-row">
                               <select value={ei.sizeId} onChange={(e) => setEi({ ...ei, sizeId: e.target.value })}>{sizes.map((s) => <option key={s.id} value={s.id}>{sizeLabel(s)}</option>)}</select>
-                              <input type="number" value={ei.packetsProduced} onChange={(e) => setEi({ ...ei, packetsProduced: e.target.value })} placeholder="packets" style={{ width: 100 }} />
+                              <input type="number" step="any" value={ei.packetsProduced} onChange={(e) => setEi({ ...ei, packetsProduced: e.target.value })} placeholder="packets" style={{ width: 100 }} />
                               <button className="icon-btn" onClick={saveEditItem}><Check size={15} /></button>
                               <button className="icon-btn" onClick={() => setEditItemId(null)}><X size={15} /></button>
                             </div>
@@ -1706,7 +1783,7 @@ function ProductionEditTab({ ctx }) {
                       const w = Number(it.packetsProduced) * packetWeightKg(sz);
                       return (
                         <tr key={it.id}>
-                          <td>{sizeLabel(sz)}</td><td className="mono">{num(it.packetsProduced, 0)}</td>
+                          <td>{sizeLabel(sz)}</td><td className="mono">{num(it.packetsProduced)}</td>
                           <td className="mono">{num(w)}</td>
                           <td className="row-actions">
                             {canEdit && <button className="icon-btn" onClick={() => startEditItem(it)}><Pencil size={15} /></button>}
@@ -2051,7 +2128,7 @@ function Style() {
       .login-notice { font-size:12.5px; color:var(--moss); background:var(--moss-bg); border:1px solid var(--moss); border-radius:6px; padding:9px 11px; }
       .login-submit { justify-content:center; }
       .login-switch { background:none; border:none; color:var(--mill, #2B4C6F); font-size:12.5px; cursor:pointer; text-decoration:underline; padding:0; text-align:left; }
-    /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
+          /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
 
 input,
 textarea,
