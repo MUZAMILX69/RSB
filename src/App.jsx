@@ -332,6 +332,7 @@ function AuthedApp({ session, onSignOut }) {
   const [tab, setTab] = useState("dashboard");
   const [suppliers, setSuppliers] = useState([]);
   const [brands, setBrands] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [sizes, setSizes] = useState([]);
   const [reels, setReels] = useState([]);
   const [purchases, setPurchases] = useState([]);
@@ -348,11 +349,11 @@ function AuthedApp({ session, onSignOut }) {
           setLoading(false); return;
         }
         setProfile(profRows[0]);
-        const [su, br, sz, re, pu, pr, pi] = await Promise.all([
-          sbList("suppliers"), sbList("brands"), sbList("sizes"), sbList("reels"),
+        const [su, br, cu, sz, re, pu, pr, pi] = await Promise.all([
+          sbList("suppliers"), sbList("brands"), sbList("customers"), sbList("sizes"), sbList("reels"),
           sbList("purchases"), sbList("productions"), sbList("production_items"),
         ]);
-        setSuppliers(su); setBrands(br); setSizes(sz); setReels(re); setPurchases(pu);
+        setSuppliers(su); setBrands(br); setCustomers(cu); setSizes(sz); setReels(re); setPurchases(pu);
         setProductions(pr); setProductionItems(pi);
       } catch (e) {
         setLoadError(e.message || "Failed to load data.");
@@ -365,6 +366,7 @@ function AuthedApp({ session, onSignOut }) {
   const persist = {
     suppliers: (v) => { const p = suppliers; setSuppliers(v); return syncTable("suppliers", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
     brands: (v) => { const p = brands; setBrands(v); return syncTable("brands", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    customers: (v) => { const p = customers; setCustomers(v); return syncTable("customers", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
     sizes: (v) => { const p = sizes; setSizes(v); return syncTable("sizes", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
     reels: (v) => { const p = reels; setReels(v); return syncTable("reels", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
     purchases: (v) => { const p = purchases; setPurchases(v); return syncTable("purchases", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
@@ -374,6 +376,9 @@ function AuthedApp({ session, onSignOut }) {
 
   const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || "—";
   const brandName = (id) => brands.find((b) => b.id === id)?.name || "—";
+  const customerName = (id) => customers.find((c) => c.id === id)?.name || "—";
+  // display helper: prefer the new customerId link; fall back to old free-text purchasedBy for historical rows
+  const purchasedByLabel = (purchase) => purchase.customerId ? customerName(purchase.customerId) : (purchase.purchasedBy || "");
   const packetWeightKg = (size) => (Number(size.width) * Number(size.length) * Number(size.gsm)) / 15500;
   const sizeLabel = (size) => `${size.width}x${size.length} · ${size.gsm}g · ${brandName(size.brandId)} · BLC`;
   const reelDesc = (lot) => `BLC ${lot.gsm}g ${lot.width ? lot.width + '" · ' : ''}${brandName(lot.brandId)}`;
@@ -447,10 +452,20 @@ function AuthedApp({ session, onSignOut }) {
 
   const totals = useMemo(() => {
     const godownWeight = reels.filter((r) => lotInfo[r.id]?.status !== "purchased").reduce((a, r) => a + (lotInfo[r.id]?.remaining || 0), 0);
+    const godownReelsCount = reels.filter((r) => lotInfo[r.id]?.status !== "purchased").length;
     const purchaseValue = purchases.reduce((a, p) => a + Number(p.weight) * Number(p.rate), 0);
+    const purchaseWeight = purchases.reduce((a, p) => a + Number(p.weight), 0);
     const packetsProduced = productionItems.reduce((a, it) => a + Number(it.packetsProduced), 0);
-    return { godownWeight, purchaseValue, packetsProduced };
-  }, [reels, lotInfo, purchases, productionItems]);
+    const buyerMap = new Map();
+    purchases.forEach((p) => {
+      const name = purchasedByLabel(p).trim() || "Unspecified";
+      if (!buyerMap.has(name)) buyerMap.set(name, { name, weight: 0, amount: 0, count: 0 });
+      const b = buyerMap.get(name);
+      b.weight += Number(p.weight); b.amount += Number(p.weight) * Number(p.rate); b.count += 1;
+    });
+    const purchasedByBreakdown = [...buyerMap.values()].sort((a, b) => b.amount - a.amount);
+    return { godownWeight, godownReelsCount, purchaseValue, purchaseWeight, packetsProduced, purchasedByBreakdown };
+  }, [reels, lotInfo, purchases, productionItems, customers]);
 
   if (loading) return <div className="app-shell loading-shell"><Style /><Loader2 className="spin" size={22} /><span>Opening the ledger...</span></div>;
   if (loadError) {
@@ -469,8 +484,8 @@ function AuthedApp({ session, onSignOut }) {
   const isAdmin = profile.role === "admin";
 
   const ctx = {
-    suppliers, brands, sizes, reels, purchases, productions, productionItems, persist,
-    supplierName, brandName, packetWeightKg, sizeLabel, reelDesc, avgGramForEntry, avgGramForLot, itemsFor, itemsWeightFor,
+    suppliers, brands, customers, sizes, reels, purchases, productions, productionItems, persist,
+    supplierName, brandName, customerName, purchasedByLabel, packetWeightKg, sizeLabel, reelDesc, avgGramForEntry, avgGramForLot, itemsFor, itemsWeightFor,
     lotInfo, totals, usedWeightForLot, remainingForLot, remainingAfterProduction, totalPacketWeightForLot,
     reelLabelMap, purchaseLabelMap, productionLabelMap, profile, can, isAdmin,
   };
@@ -570,10 +585,10 @@ function Dashboard({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="You don't have report-viewing access yet — ask an admin to grant it in Team." />;
   const { totals, reels, suppliers, sizes } = ctx;
   const cards = [
-    { label: "Reel lots on record", value: reels.length },
+    { label: "In-godown reels", value: num(totals.godownReelsCount, 0) },
     { label: "In-godown weight (unpurchased)", value: num(totals.godownWeight) + " kg" },
+    { label: "Purchase weight total", value: num(totals.purchaseWeight) + " kg" },
     { label: "Total purchased value", value: money(totals.purchaseValue) },
-    { label: "Packets produced", value: num(totals.packetsProduced) },
     { label: "Suppliers / sizes on file", value: `${suppliers.length} / ${sizes.length}` },
   ];
   return (
@@ -581,6 +596,19 @@ function Dashboard({ ctx }) {
       <div className="metric-grid">{cards.map((c) => (
         <div className="metric-card" key={c.label}><div className="metric-label">{c.label}</div><div className="metric-value">{c.value}</div></div>
       ))}</div>
+      {totals.purchasedByBreakdown.length > 0 && (
+        <>
+          <h3 className="sub-heading">Purchased by</h3>
+          <table className="ledger-table">
+            <thead><tr><th>Buyer</th><th>Purchases</th><th>Weight</th><th>Amount</th></tr></thead>
+            <tbody>
+              {totals.purchasedByBreakdown.map((b) => (
+                <tr key={b.name}><td>{b.name}</td><td className="mono">{num(b.count, 0)}</td><td className="mono">{num(b.weight)} kg</td><td className="mono">{money(b.amount)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
       {reels.length === 0 && (
         <div className="invite-panel">
           <div className="invite-title">Start the register</div>
@@ -599,14 +627,16 @@ function MastersTab({ ctx }) {
   return (
     <div>
       <div className="subtabbar no-print">
-        {["suppliers", "brands", "sizes"].map((s) => (
-          <button key={s} className={"subtab" + (sub === s ? " active" : "")} onClick={() => setSub(s)}>{s === "suppliers" ? "Suppliers" : s === "brands" ? "Brands" : "Packet sizes"}</button>
+        {["suppliers", "brands", "customers", "sizes"].map((s) => (
+          <button key={s} className={"subtab" + (sub === s ? " active" : "")} onClick={() => setSub(s)}>{s === "suppliers" ? "Suppliers" : s === "brands" ? "Brands" : s === "customers" ? "Customers" : "Packet sizes"}</button>
         ))}
       </div>
       {sub === "suppliers" && <NameListEditor title="Suppliers" items={ctx.suppliers} setItems={ctx.persist.suppliers}
         withContact blockedIds={ctx.reels.map((r) => r.supplierId)} placeholder="e.g. Punjab Board Mills" canManage={canManage} isAdmin={isAdmin} />}
       {sub === "brands" && <NameListEditor title="Brands" items={ctx.brands} setItems={ctx.persist.brands}
         blockedIds={ctx.reels.map((r) => r.brandId)} placeholder="e.g. Ningbo Fold" canManage={canManage} isAdmin={isAdmin} />}
+      {sub === "customers" && <NameListEditor title="Customers" items={ctx.customers} setItems={ctx.persist.customers}
+        withContact blockedIds={ctx.purchases.map((p) => p.customerId).filter(Boolean)} placeholder="e.g. Abbasi Traders" canManage={canManage} isAdmin={isAdmin} />}
       {sub === "sizes" && <SizesEditor ctx={ctx} canManage={canManage} isAdmin={isAdmin} />}
     </div>
   );
@@ -911,7 +941,7 @@ function ReelsEntriesTab({ ctx }) {
 
 function ReelsReportView({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="You don't have permission to view reports." />;
-  const { reels, suppliers, supplierName, reelDesc, lotInfo, reelLabelMap, purchaseLabelMap, productionLabelMap, sizeLabel, packetWeightKg, sizes, itemsFor } = ctx;
+  const { reels, suppliers, supplierName, reelDesc, lotInfo, reelLabelMap, purchaseLabelMap, productionLabelMap, sizeLabel, packetWeightKg, sizes, itemsFor, purchasedByLabel } = ctx;
   const [supplierFilter, setSupplierFilter] = useState([]);
   const [statusFilter, setStatusFilter] = useState([]);
   const [q, setQ] = useState("");
@@ -949,20 +979,26 @@ function ReelsReportView({ ctx }) {
     return total;
   };
   const grandLoadingCharges = loadingChargesFor(filtered);
+  const grandWeightOnScreen = filtered.reduce((a, l) => a + Number(l.weight), 0);
+  const grandRemainingOnScreen = filtered.reduce((a, l) => a + lotInfo[l.id].remaining, 0);
 
   const doPrint = () => {
     let html = "";
     groups.forEach(([d, lots]) => {
       const sorted = sortWithin(lots, sort, getters);
       const dateCharges = loadingChargesFor(lots);
+      const tW = lots.reduce((a, l) => a + Number(l.weight), 0);
+      const tR = lots.reduce((a, l) => a + lotInfo[l.id].remaining, 0);
       html += `<h2>${esc(fmtDate(d))} — ${lots.length} reel(s)${dateCharges > 0 ? ` — loading charges ${money(dateCharges)}` : ""}</h2><table><thead><tr><th>Entry</th><th>Item description</th><th>Lot no</th><th>Width</th><th>Supplier</th><th>Status</th><th>Received</th><th>Remaining</th></tr></thead><tbody>`;
       sorted.forEach((lot) => {
         const info = lotInfo[lot.id];
         html += `<tr><td class="tag">${esc(reelLabelMap.get(lot.batchId))}</td><td>${esc(reelDesc(lot))}</td><td class="tag">${esc(lot.lotNo)}</td><td>${esc(lot.width)}</td><td>${esc(supplierName(lot.supplierId))}</td><td>${esc(statusLabel(info.status))}</td><td>${num(lot.weight)} kg</td><td>${num(info.remaining)} kg</td></tr>`;
       });
-      html += `</tbody></table>`;
+      html += `</tbody><tfoot><tr><td colspan="6">${lots.length} reel(s)</td><td>${num(tW)}</td><td>${num(tR)}</td></tr></tfoot></table>`;
     });
-    if (grandLoadingCharges > 0) html += `<h2>Grand total loading charges — ${money(grandLoadingCharges)}</h2>`;
+    const grandWeight = filtered.reduce((a, l) => a + Number(l.weight), 0);
+    const grandRemaining = filtered.reduce((a, l) => a + lotInfo[l.id].remaining, 0);
+    html += `<h2>Grand total — ${filtered.length} reel(s)</h2><table><tbody><tr><td>Total weight received</td><td>${num(grandWeight)} kg</td></tr><tr><td>Total remaining</td><td>${num(grandRemaining)} kg</td></tr>${grandLoadingCharges > 0 ? `<tr><td>Total loading charges</td><td>${money(grandLoadingCharges)}</td></tr>` : ""}</tbody></table>`;
     printHTML("Reels in report", html || "<p>No entries.</p>");
   };
 
@@ -1013,7 +1049,7 @@ function ReelsReportView({ ctx }) {
                                 })}
                               </div>
                             ))}
-                            {info.purchase && <div className="detail-line">Purchase {purchaseLabelMap.get(info.purchase.batchId)}: {num(info.purchase.weight)} kg at {num(info.purchase.rate)}/kg = {money(Number(info.purchase.weight) * Number(info.purchase.rate))}, on {fmtDate(info.purchase.date)}</div>}
+                            {info.purchase && <div className="detail-line">Purchase {purchaseLabelMap.get(info.purchase.batchId)}: {num(info.purchase.weight)} kg at {num(info.purchase.rate)}/kg = {money(Number(info.purchase.weight) * Number(info.purchase.rate))}{purchasedByLabel(info.purchase) ? ` · purchased by ${purchasedByLabel(info.purchase)}` : ""}, on {fmtDate(info.purchase.date)}</div>}
                             {info.status === "consignment" && <div className="detail-line">Still sitting in godown, not yet purchased or produced.</div>}
                             {info.status === "partial" && <div className="detail-line">{num(info.remaining)} kg still available — can be purchased or converted further.</div>}
                           </div>
@@ -1023,14 +1059,17 @@ function ReelsReportView({ ctx }) {
                   );
                 })}
               </tbody>
+              <tfoot><tr><td /><td colSpan={5}>{lots.length} reel{lots.length > 1 ? "s" : ""}</td><td /><td className="mono">{num(lots.reduce((a, l) => a + Number(l.weight), 0))}</td><td className="mono">{num(lots.reduce((a, l) => a + lotInfo[l.id].remaining, 0))}</td></tr></tfoot>
             </table>
           </div>
         );
       })}
-      {grandLoadingCharges > 0 && (
-        <div className="report-grand-total">
-          <span>Grand total loading charges</span>
-          <span className="mono">{money(grandLoadingCharges)}</span>
+      {filtered.length > 0 && (
+        <div className="report-grand-total report-grand-total-multi">
+          <span>Grand total — {filtered.length} reel(s)</span>
+          <span className="mono">Weight {num(grandWeightOnScreen)} kg</span>
+          <span className="mono">Remaining {num(grandRemainingOnScreen)} kg</span>
+          {grandLoadingCharges > 0 && <span className="mono">Loading charges {money(grandLoadingCharges)}</span>}
         </div>
       )}
     </div>
@@ -1125,9 +1164,9 @@ function PurchasesModule({ ctx }) {
 }
 
 function PurchasesAddForm({ ctx }) {
-  const { reels, purchases, persist, reelDesc, lotInfo, purchaseLabelMap } = ctx;
+  const { reels, purchases, customers, persist, reelDesc, lotInfo, purchaseLabelMap } = ctx;
   const [date, setDate] = useState(todayISO());
-  const blankRow = () => ({ key: uid(), lotId: "", rate: "", purchasedBy: "" });
+  const blankRow = () => ({ key: uid(), lotId: "", rate: "", customerId: "" });
   const [rows, setRows] = useState([blankRow()]);
   const [lastSaved, setLastSaved] = useState(null);
   const eligible = reels.filter((r) => lotInfo[r.id]?.available);
@@ -1141,7 +1180,7 @@ function PurchasesAddForm({ ctx }) {
     const valid = rows.filter((r) => r.lotId && r.rate && lotInfo[r.lotId]?.available);
     if (valid.length === 0 || !date) return;
     const batchId = uid();
-    const newOnes = valid.map((r) => ({ id: uid(), batchId, lotId: r.lotId, weight: lotInfo[r.lotId].remaining, rate: Number(r.rate), purchasedBy: r.purchasedBy.trim(), date }));
+    const newOnes = valid.map((r) => ({ id: uid(), batchId, lotId: r.lotId, weight: lotInfo[r.lotId].remaining, rate: Number(r.rate), customerId: r.customerId || null, date }));
     persist.purchases([...purchases, ...newOnes]);
     setLastSaved({ count: newOnes.length, batchId });
     setRows([blankRow()]);
@@ -1150,6 +1189,7 @@ function PurchasesAddForm({ ctx }) {
   return (
     <div>
       {eligible.length === 0 && rows.every((r) => !r.lotId) && <EmptyRow>No reels available to purchase right now (nothing in godown or partly converted).</EmptyRow>}
+      {customers.length === 0 && <EmptyRow>No customers on file yet — add one in Suppliers / brands / sizes → Customers to attribute purchases to a buyer.</EmptyRow>}
       <div className="ticket-form" style={{ maxWidth: 900 }}>
         <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
         <FormDivider label="Purchase lines for this entry" />
@@ -1164,7 +1204,10 @@ function PurchasesAddForm({ ctx }) {
                 <LotPicker rowKey={r.key} lots={eligible} value={r.lotId} onChange={(id) => updateRow(r.key, { lotId: id })} labelFn={labelFn} placeholder="" />
                 <span className="static-cell">{lot ? num(weight) + " kg" : "—"}</span>
                 <input type="number" value={r.rate} onChange={(e) => updateRow(r.key, { rate: e.target.value })} />
-                <input value={r.purchasedBy} onChange={(e) => updateRow(r.key, { purchasedBy: e.target.value })} />
+                <select value={r.customerId} onChange={(e) => updateRow(r.key, { customerId: e.target.value })}>
+                  <option value="">Select customer…</option>
+                  {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
                 <span className="static-cell mono-tag">{money(amt)}</span>
               </div>
             );
@@ -1246,7 +1289,7 @@ function PurchasesEntriesTab({ ctx }) {
                   return (
                     <div className="row" key={p.id}>
                       <div className="row-title">{lot ? reelDesc(lot) : "removed"} <span className="mono-tag">Lot {lot?.lotNo}</span></div>
-                      <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{p.purchasedBy ? ` · purchased by ${p.purchasedBy}` : ""}</div>
+                      <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{ctx.purchasedByLabel(p) ? ` · purchased by ${ctx.purchasedByLabel(p)}` : ""}</div>
                     </div>
                   );
                 })}
@@ -1261,7 +1304,7 @@ function PurchasesEntriesTab({ ctx }) {
 
 function PurchaseReportView({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="You don't have permission to view reports." />;
-  const { reels, purchases, reelDesc, purchaseLabelMap } = ctx;
+  const { reels, purchases, reelDesc, purchaseLabelMap, purchasedByLabel } = ctx;
   const [q, setQ] = useState(""); const [from, setFrom] = useState(""); const [to, setTo] = useState("");
   const [sort, setSort] = useState({ field: "entry", dir: "desc" });
 
@@ -1272,7 +1315,7 @@ function PurchaseReportView({ ctx }) {
       const query = q.trim().toLowerCase();
       const lot = reels.find((r) => r.id === p.lotId);
       const label = (purchaseLabelMap.get(p.batchId) || "").toLowerCase();
-      const hay = `${label} ${lot ? lot.lotNo : ""} ${lot ? reelDesc(lot).toLowerCase() : ""} ${(p.purchasedBy || "").toLowerCase()}`;
+      const hay = `${label} ${lot ? lot.lotNo : ""} ${lot ? reelDesc(lot).toLowerCase() : ""} ${purchasedByLabel(p).toLowerCase()}`;
       if (!hay.includes(query)) return false;
     }
     return true;
@@ -1291,7 +1334,7 @@ function PurchaseReportView({ ctx }) {
       html += `<h2>${esc(fmtDate(d))}</h2><table><thead><tr><th>Entry</th><th>Description</th><th>Lot no</th><th>T.weight</th><th>Rate</th><th>Purchased by</th><th>Amount</th></tr></thead><tbody>`;
       sorted.forEach((p) => {
         const lot = reels.find((r) => r.id === p.lotId); if (!lot) return;
-        html += `<tr><td class="tag">${esc(purchaseLabelMap.get(p.batchId))}</td><td>${esc(reelDesc(lot))}</td><td class="tag">${esc(lot.lotNo)}</td><td>${num(p.weight)}</td><td>${num(p.rate)}</td><td>${esc(p.purchasedBy || "—")}</td><td>${money(Number(p.weight) * Number(p.rate))}</td></tr>`;
+        html += `<tr><td class="tag">${esc(purchaseLabelMap.get(p.batchId))}</td><td>${esc(reelDesc(lot))}</td><td class="tag">${esc(lot.lotNo)}</td><td>${num(p.weight)}</td><td>${num(p.rate)}</td><td>${esc(purchasedByLabel(p) || "—")}</td><td>${money(Number(p.weight) * Number(p.rate))}</td></tr>`;
       });
       html += `</tbody><tfoot><tr><td colspan="3">${lines.length} lot(s)</td><td>${num(tW)}</td><td></td><td></td><td>${money(tA)}</td></tr></tfoot></table>`;
     });
@@ -1327,7 +1370,7 @@ function PurchaseReportView({ ctx }) {
                       <td className="mono">{purchaseLabelMap.get(p.batchId)}</td>
                       <td>{reelDesc(lot)}</td><td className="mono">{lot.lotNo}</td>
                       <td className="mono">{num(p.weight)}</td><td className="mono">{num(p.rate)}</td>
-                      <td>{p.purchasedBy || "—"}</td>
+                      <td>{purchasedByLabel(p) || "—"}</td>
                       <td className="mono">{money(Number(p.weight) * Number(p.rate))}</td>
                     </tr>
                   );
@@ -1352,16 +1395,16 @@ function PurchaseReportView({ ctx }) {
 function PurchaseEditTab({ ctx }) {
   const canEdit = ctx.can("canEditEntries"); const canDelete = ctx.can("canDeleteEntries");
   if (!canEdit && !canDelete) return <LockedNote text="You don't have permission to edit or delete purchases." />;
-  const { reels, purchases, persist, reelDesc, lotInfo, purchaseLabelMap, remainingForLot } = ctx;
+  const { reels, purchases, customers, persist, reelDesc, lotInfo, purchaseLabelMap, remainingForLot, purchasedByLabel } = ctx;
   const [editId, setEditId] = useState(null); const [ef, setEf] = useState(null);
   const [q, setQ] = useState("");
 
   const eligibleFor = (currentLotId) => reels.filter((r) => r.id === currentLotId || lotInfo[r.id]?.available);
   const labelFn = (excludeId) => (l) => `${reelDesc(l)} · Lot ${l.lotNo} · ${num(remainingForLot(l.id, excludeId))} kg available`;
-  const startEdit = (p) => { setEditId(p.id); setEf({ lotId: p.lotId, rate: p.rate, purchasedBy: p.purchasedBy || "", date: p.date }); };
+  const startEdit = (p) => { setEditId(p.id); setEf({ lotId: p.lotId, rate: p.rate, customerId: p.customerId || "", date: p.date }); };
   const saveEdit = () => {
     const weight = remainingForLot(ef.lotId, editId);
-    persist.purchases(purchases.map((p) => p.id === editId ? { ...p, lotId: ef.lotId, weight, rate: Number(ef.rate), purchasedBy: ef.purchasedBy.trim(), date: ef.date } : p));
+    persist.purchases(purchases.map((p) => p.id === editId ? { ...p, lotId: ef.lotId, weight, rate: Number(ef.rate), customerId: ef.customerId || null, date: ef.date } : p));
     setEditId(null);
   };
   const remove = (id) => { if (!confirmDelete("this purchase")) return; persist.purchases(purchases.filter((p) => p.id !== id)); };
@@ -1394,7 +1437,10 @@ function PurchaseEditTab({ ctx }) {
                     <div className="edit-row grid-5">
                       <LotPicker rowKey={p.id} lots={eligibleFor(p.lotId)} value={ef.lotId} onChange={(id) => setEf({ ...ef, lotId: id })} labelFn={labelFn(p.id)} />
                       <input type="number" value={ef.rate} onChange={(e) => setEf({ ...ef, rate: e.target.value })} placeholder="rate" />
-                      <input value={ef.purchasedBy} onChange={(e) => setEf({ ...ef, purchasedBy: e.target.value })} placeholder="purchased by" />
+                      <select value={ef.customerId} onChange={(e) => setEf({ ...ef, customerId: e.target.value })}>
+                        <option value="">Select customer…</option>
+                        {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
                       <input type="date" value={ef.date} onChange={(e) => setEf({ ...ef, date: e.target.value })} />
                       <button className="icon-btn" onClick={saveEdit}><Check size={15} /></button>
                       <button className="icon-btn" onClick={() => setEditId(null)}><X size={15} /></button>
@@ -1403,7 +1449,7 @@ function PurchaseEditTab({ ctx }) {
                     <>
                       <div>
                         <div className="row-title">{reelDesc(lot)} <span className="mono-tag entry-tag">{purchaseLabelMap.get(p.batchId)}</span> <span className="mono-tag">Lot {lot.lotNo}</span></div>
-                        <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{p.purchasedBy ? ` · purchased by ${p.purchasedBy}` : ""}</div>
+                        <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{purchasedByLabel(p) ? ` · purchased by ${purchasedByLabel(p)}` : ""}</div>
                       </div>
                       <div className="row-actions">
                         {canEdit && <button className="icon-btn" onClick={() => startEdit(p)}><Pencil size={15} /></button>}
@@ -1626,12 +1672,18 @@ function ProductionReportView({ ctx }) {
   });
   const groups = groupByDate(filtered);
   const getters = { used: (p) => itemsWeightFor(p.id) + Number(p.wastageKg || 0), wastage: (p) => Number(p.wastageKg || 0) };
+  const packetsFor = (p) => itemsFor(p.id).reduce((a, it) => a + Number(it.packetsProduced), 0);
+  const grandPackets = filtered.reduce((a, p) => a + packetsFor(p), 0);
+  const grandUsed = filtered.reduce((a, p) => a + itemsWeightFor(p.id), 0);
+  const grandWastage = filtered.reduce((a, p) => a + Number(p.wastageKg || 0), 0);
 
   const doPrint = () => {
     let html = "";
     groups.forEach(([d, heads]) => {
       const sorted = sortWithin(heads, sort, getters);
-      html += `<h2>${esc(fmtDate(d))}</h2>`;
+      const dUsed = heads.reduce((a, p) => a + itemsWeightFor(p.id), 0);
+      const dWastage = heads.reduce((a, p) => a + Number(p.wastageKg || 0), 0);
+      html += `<h2>${esc(fmtDate(d))} — weight used ${num(dUsed)} kg — wastage ${num(dWastage)} kg</h2>`;
       sorted.forEach((p) => {
         const lot = reels.find((r) => r.id === p.lotId); if (!lot) return;
         const avgGram = avgGramForLot(lot);
@@ -1645,6 +1697,7 @@ function ProductionReportView({ ctx }) {
         html += `</tbody></table>`;
       });
     });
+    html += `<h2>Grand total — ${filtered.length} production entr${filtered.length === 1 ? "y" : "ies"}</h2><table><tbody><tr><td>Total packets</td><td>${num(grandPackets)}</td></tr><tr><td>Total weight used (packets)</td><td>${num(grandUsed)} kg</td></tr><tr><td>Total wastage</td><td>${num(grandWastage)} kg</td></tr><tr><td>Total weight used (incl. wastage)</td><td>${num(grandUsed + grandWastage)} kg</td></tr></tbody></table>`;
     printHTML("Production report", html || "<p>No entries.</p>");
   };
 
@@ -1660,9 +1713,11 @@ function ProductionReportView({ ctx }) {
       {groups.length === 0 && <EmptyRow>No production entries match this filter.</EmptyRow>}
       {groups.map(([d, heads]) => {
         const sorted = sortWithin(heads, sort, getters);
+        const dUsed = heads.reduce((a, p) => a + itemsWeightFor(p.id), 0);
+        const dWastage = heads.reduce((a, p) => a + Number(p.wastageKg || 0), 0);
         return (
           <div key={d} className="date-block">
-            <div className="date-block-head">{fmtDate(d)}</div>
+            <div className="date-block-head">{fmtDate(d)} <span>weight used {num(dUsed)} kg · wastage {num(dWastage)} kg</span></div>
             {sorted.map((p) => {
               const lot = reels.find((r) => r.id === p.lotId);
               if (!lot) return null;
@@ -1694,6 +1749,9 @@ function ProductionReportView({ ctx }) {
                         );
                       })}
                     </tbody>
+                    {items.length > 0 && (
+                      <tfoot><tr><td>{items.length} size{items.length > 1 ? "s" : ""}</td><td className="mono">{num(packetsFor(p))}</td><td className="mono">{num(itemsWeightFor(p.id))}</td></tr></tfoot>
+                    )}
                   </table>
                 </div>
               );
@@ -1701,6 +1759,14 @@ function ProductionReportView({ ctx }) {
           </div>
         );
       })}
+      {filtered.length > 0 && (
+        <div className="report-grand-total">
+          <span>Grand total — {filtered.length} production entr{filtered.length === 1 ? "y" : "ies"}</span>
+          <span className="mono">Packets {num(grandPackets)}</span>
+          <span className="mono">Weight used {num(grandUsed)} kg</span>
+          <span className="mono">Wastage {num(grandWastage)} kg</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1819,7 +1885,7 @@ function StockModule({ ctx }) {
 
 function StockReportTab({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="You don't have permission to view reports." />;
-  const { reels, suppliers, lotInfo, reelDesc, supplierName } = ctx;
+  const { reels, suppliers, lotInfo, reelDesc, supplierName, purchasedByLabel } = ctx;
   const [supplierFilter, setSupplierFilter] = useState([]);
   const [statusFilter, setStatusFilter] = useState([]);
   const [q, setQ] = useState("");
@@ -1857,7 +1923,7 @@ function StockReportTab({ ctx }) {
     let html = `<table><thead><tr><th>Description</th><th>Detail</th><th>Lot no</th><th>Width</th><th>Supplier</th><th>Status</th><th>Purchased by</th><th>Remaining</th><th>Weight</th></tr></thead><tbody>`;
     sorted.forEach((lot) => {
       const info = lotInfo[lot.id];
-      html += `<tr><td>${esc(reelDesc(lot))}</td><td>${esc(lot.detail || "—")}</td><td class="tag">${esc(lot.lotNo)}</td><td>${esc(lot.width)}</td><td>${esc(supplierName(lot.supplierId))}</td><td>${esc(statusLabel(info.status))}</td><td>${esc(info.purchase?.purchasedBy || "—")}</td><td>${num(info.remaining)}</td><td>${num(lot.weight)}</td></tr>`;
+      html += `<tr><td>${esc(reelDesc(lot))}</td><td>${esc(lot.detail || "—")}</td><td class="tag">${esc(lot.lotNo)}</td><td>${esc(lot.width)}</td><td>${esc(supplierName(lot.supplierId))}</td><td>${esc(statusLabel(info.status))}</td><td>${esc(purchasedByLabel(info.purchase || {}) || "—")}</td><td>${num(info.remaining)}</td><td>${num(lot.weight)}</td></tr>`;
     });
     html += `</tbody><tfoot><tr><td colspan="7">${sorted.length} lot(s)</td><td>${num(sumRemaining)}</td><td>${num(sumWeight)}</td></tr></tfoot></table>`;
     printHTML("Current stock", html);
@@ -1884,7 +1950,7 @@ function StockReportTab({ ctx }) {
               <tr key={lot.id}>
                 <td>{reelDesc(lot)}</td><td>{lot.detail || "—"}</td><td className="mono">{lot.lotNo}</td><td className="mono">{lot.width || "—"}</td>
                 <td>{supplierName(lot.supplierId)}</td><td><Stamp tone={statusTone(info.status)}>{statusLabel(info.status)}</Stamp></td>
-                <td>{info.purchase?.purchasedBy || "—"}</td>
+                <td>{purchasedByLabel(info.purchase || {}) || "—"}</td>
                 <td className="mono">{num(info.remaining)}</td><td className="mono">{num(lot.weight)}</td>
               </tr>
             );
@@ -2102,7 +2168,7 @@ function Style() {
       .ledger-table td { padding:9px 8px; border-bottom:1px solid var(--line); }
       .ledger-table td.mono, .ledger-table th.mono { font-family:'IBM Plex Mono',monospace; }
       .ledger-table tfoot td { font-weight:500; border-top:2px solid var(--ink); border-bottom:none; font-family:'IBM Plex Mono',monospace; }
-      .report-grand-total { display:flex; gap:24px; align-items:center; justify-content:flex-end; background:var(--ink); color:var(--paper); border-radius:8px; padding:12px 18px; margin-top:6px; font-size:13px; font-weight:500; }
+      .report-grand-total { display:flex; gap:24px; align-items:center; justify-content:flex-end; flex-wrap:wrap; background:var(--ink); color:var(--paper); border-radius:8px; padding:12px 18px; margin-top:6px; font-size:13px; font-weight:500; }
       .report-grand-total .mono { font-family:'IBM Plex Mono',monospace; font-size:14px; }
       .filter-bar { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:18px; background:var(--paper-2); border:1px solid var(--line); border-radius:10px; padding:14px; }
       .stamp { font-family:'IBM Plex Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:4px 9px; border-radius:4px; border:1px solid currentColor; transform:rotate(-2deg); white-space:nowrap; display:inline-block; }
