@@ -159,19 +159,31 @@ function Rail({ view, setView, isAdmin, onSignOut }) {
   const go = (g) => setView(g.view || (g.children && g.children[0].view));
   return (
     <aside className="rail no-print">
-      <div className="rail-logo"><Boxes size={20} /></div>
+      <div className="rail-top">
+        <div className="rail-logo"><Boxes size={20} /></div>
+        <div className="rail-brand">
+          <div className="rail-brand-title">Sale Base Stock</div>
+          <div className="rail-brand-sub">Bleach board register</div>
+        </div>
+      </div>
       <nav className="rail-nav">
         {groups.map((g) => {
           const Icon = g.icon;
+          const active = activeGroup === g.id;
           return (
-            <button key={g.id} className={"rail-btn " + (activeGroup === g.id ? "active" : "")} title={g.label} onClick={() => go(g)}>
-              <Icon size={19} />
+            <button key={g.id} className={"rail-btn " + (active ? "active" : "")} title={g.label} onClick={() => go(g)}>
+              <Icon size={18} />
+              <span className="rail-label">{g.label}</span>
+              {g.children && <ChevronRight size={14} className={"rail-chevron " + (active ? "open" : "")} />}
             </button>
           );
         })}
       </nav>
       <div className="rail-foot">
-        <button className="rail-btn" title="Sign out" onClick={onSignOut}><LogOut size={18} /></button>
+        <button className="rail-btn rail-signout" title="Sign out" onClick={onSignOut}>
+          <LogOut size={18} />
+          <span className="rail-label">Sign out</span>
+        </button>
       </div>
     </aside>
   );
@@ -2638,14 +2650,23 @@ input, textarea, select { color:#1B2559; }
 .main-area { flex:1; min-width:0; padding:26px 30px 46px; }
 .app-main { max-width: 1180px; }
 
-/* icon rail */
-.rail { width:84px; background:#fff; border-right:1px solid var(--line); display:flex; flex-direction:column; align-items:center; padding:18px 0; gap:8px; position:sticky; top:0; height:100vh; flex-shrink:0; z-index:30; }
-.rail-logo { width:46px; height:46px; border-radius:15px; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; display:flex; align-items:center; justify-content:center; margin-bottom:16px; box-shadow:0 8px 18px rgba(67,24,255,.32); }
-.rail-nav { display:flex; flex-direction:column; gap:6px; flex:1; }
-.rail-btn { width:46px; height:46px; border-radius:14px; border:none; background:transparent; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:.15s; }
+/* sidebar with names */
+.rail { width:238px; background:#fff; border-right:1px solid var(--line); display:flex; flex-direction:column; padding:18px 14px; gap:8px; position:sticky; top:0; height:100vh; flex-shrink:0; z-index:30; }
+.rail-top { display:flex; align-items:center; gap:10px; padding:0 4px 16px; border-bottom:1px solid var(--line); margin-bottom:10px; }
+.rail-logo { width:42px; height:42px; border-radius:13px; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0; box-shadow:0 8px 18px rgba(67,24,255,.32); }
+.rail-brand { min-width:0; }
+.rail-brand-title { font-size:13.5px; font-weight:800; color:var(--navy); letter-spacing:-.01em; white-space:nowrap; }
+.rail-brand-sub { font-size:9.5px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.06em; white-space:nowrap; }
+.rail-nav { display:flex; flex-direction:column; gap:4px; flex:1; overflow-y:auto; }
+.rail-btn { display:flex; align-items:center; gap:11px; width:100%; padding:11px 12px; border-radius:12px; border:none; background:transparent; color:var(--muted); font-size:13px; font-weight:700; cursor:pointer; transition:.15s; text-align:left; }
+.rail-btn svg { flex-shrink:0; }
+.rail-label { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rail-chevron { opacity:.45; transition:.15s; flex-shrink:0; }
+.rail-chevron.open { transform:rotate(90deg); }
 .rail-btn:hover { background:var(--gray-soft); color:var(--navy); }
 .rail-btn.active { background:var(--brand-soft); color:var(--brand); box-shadow: inset 0 0 0 1px rgba(67,24,255,.18); }
-.rail-foot { margin-top:auto; }
+.rail-foot { margin-top:auto; padding-top:10px; border-top:1px solid var(--line); }
+.rail-signout:hover { background:var(--red-soft); color:var(--red); }
 
 /* header + pills */
 .page-head { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
@@ -2848,6 +2869,13 @@ input, textarea, select { color:#1B2559; }
   .span-2 { grid-column:span 1; }
   .filter-bar { flex-direction:column; }
   .edit-row.grid-4, .edit-row.grid-5, .edit-row.grid-8 { grid-template-columns:1fr; }
+
+}
+  @media (max-width: 768px) {
+  .rail { width:74px; padding:14px 10px; }
+  .rail-label, .rail-chevron, .rail-brand { display:none; }
+  .rail-btn { justify-content:center; padding:11px 0; }
+  .rail-top { justify-content:center; padding-bottom:12px; }
 }
 `}</style>
   );
