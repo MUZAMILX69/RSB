@@ -2,13 +2,12 @@ import React, { useState, useEffect, useMemo } from "react";
 import {
   LayoutDashboard, Truck, Boxes, Receipt, Factory, ClipboardList,
   Plus, Trash2, Pencil, Check, X, Printer, Search, ChevronDown, ChevronRight, ArrowUpDown,
-  Loader2, Lock, LogOut, Users, PackageCheck
+  Loader2, Lock, LogOut, Users, PackageCheck, Clock
 } from "lucide-react";
 
 const SUPABASE_URL = "https://eovfcjadpyjxavymtqwf.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_UmpsvgnasiG799Xpw86KlA_UQv-plKX";
 let ACCESS_TOKEN = null;
-
 function setAccessToken(t) { ACCESS_TOKEN = t; }
 
 async function sbRequest(path, { method = "GET", body, headers = {} } = {}) {
@@ -31,7 +30,6 @@ async function sbRequest(path, { method = "GET", body, headers = {} } = {}) {
   }
   return data;
 }
-
 async function authSignUp(email, password, fullName) {
   return sbRequest("/auth/v1/signup", { method: "POST", body: { email, password, data: fullName ? { full_name: fullName } : undefined } });
 }
@@ -41,18 +39,15 @@ async function authSignIn(email, password) {
 async function authRefresh(refreshToken) {
   return sbRequest("/auth/v1/token?grant_type=refresh_token", { method: "POST", body: { refresh_token: refreshToken } });
 }
-
 const toCamelKey = (k) => k.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase());
 const toSnakeKey = (k) => k.replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
 const rowToCamel = (row) => Object.fromEntries(Object.entries(row).map(([k, v]) => [toCamelKey(k), v]));
 const rowsToCamel = (rows) => (rows || []).map(rowToCamel);
 const objToSnake = (obj) => Object.fromEntries(Object.entries(obj).map(([k, v]) => [toSnakeKey(k), v]));
-
 async function sbList(table, query = "?select=*") { return rowsToCamel(await sbRequest(`/rest/v1/${table}${query}`)); }
 async function sbInsert(table, rows) { if (!rows.length) return; await sbRequest(`/rest/v1/${table}`, { method: "POST", body: rows.map(objToSnake), headers: { Prefer: "return=minimal" } }); }
 async function sbUpdate(table, id, patch) { const { id: _drop, ...rest } = patch; await sbRequest(`/rest/v1/${table}?id=eq.${id}`, { method: "PATCH", body: objToSnake(rest), headers: { Prefer: "return=minimal" } }); }
 async function sbDeleteById(table, id) { await sbRequest(`/rest/v1/${table}?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }); }
-
 async function syncTable(table, prevArr, nextArr) {
   const prevMap = new Map(prevArr.map((x) => [x.id, x]));
   const nextMap = new Map(nextArr.map((x) => [x.id, x]));
@@ -65,7 +60,6 @@ async function syncTable(table, prevArr, nextArr) {
   toUpdate.forEach((x) => ops.push(sbUpdate(table, x.id, x)));
   await Promise.all(ops);
 }
-
 async function saveRefreshToken(token) { try { sessionStorage.setItem("sbs-refresh-token", token); } catch (e) {} }
 async function loadRefreshToken() { try { return sessionStorage.getItem("sbs-refresh-token"); } catch (e) { return null; } }
 async function clearRefreshToken() { try { sessionStorage.removeItem("sbs-refresh-token"); } catch (e) {} }
@@ -73,27 +67,23 @@ async function authRecover(email) { return sbRequest("/auth/v1/recover", { metho
 
 const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() :
   "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; const v = c === "x" ? r : (r & 0x3) | 0x8; return v.toString(16); });
-
 const money = (n) => "Rs " + (Number(n) || 0).toLocaleString("en-PK", { maximumFractionDigits: 0 });
 const num = (n, d = 2) => (Number(n) || 0).toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: d });
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const confirmDelete = (label) => window.confirm(`Delete ${label || "this"}? This can't be undone.`);
+const lotKey = (v) => String(v ?? "").trim().toLowerCase();
 
-const STATUS_LABEL = { consignment: "In godown", partial: "Partly converted", converted: "Fully converted", purchased: "Purchased", held: "On Hold" };
-const STATUS_TONE = { consignment: "gray", partial: "amber", converted: "blue", purchased: "green", held: "rust" };
+const STATUS_LABEL = { consignment: "In godown", partial: "Partly converted", converted: "Fully converted", purchased: "Purchased", held: "On Hold", pipeline: "In Pipeline" };
+const STATUS_TONE = { consignment: "gray", partial: "amber", converted: "blue", purchased: "green", held: "rust", pipeline: "indigo" };
 const statusLabel = (s) => STATUS_LABEL[s] || s;
 const statusTone = (s) => STATUS_TONE[s] || "gray";
 
 function buildSequentialLabelMap(arr, idKey, prefix) {
-  // number by actual creation order (immutable), not by the editable "date received"
-  // field — sorting by date let same-day entries fall back to comparing random UUIDs,
-  // which produced numbers with no relation to when entries were actually made
   const sorted = [...arr].sort((a, b) => {
     const ca = a.createdAt || ""; const cb = b.createdAt || "";
     if (ca && cb) return ca < cb ? -1 : ca > cb ? 1 : 0;
-    // fallback only if createdAt is ever missing
     const dateA = a.date || ""; const dateB = b.date || "";
     if (dateA !== dateB) return dateA < dateB ? -1 : 1;
     return String(a[idKey] || a.id) < String(b[idKey] || b.id) ? -1 : 1;
@@ -115,6 +105,11 @@ const NAV_GROUPS = [
     { id: "masters-customers", label: "Customers", view: "masters-customers" },
     { id: "masters-sizes", label: "Packet sizes", view: "masters-sizes" },
     { id: "masters-lifters", label: "Lifters", view: "masters-lifters" },
+  ] },
+  { id: "pipeline", label: "Reels in Pipeline", icon: Clock, children: [
+    { id: "pipeline-entries", label: "Entries", view: "pipeline-entries" },
+    { id: "pipeline-report", label: "Report", view: "pipeline-report" },
+    { id: "pipeline-edit", label: "Edit", view: "pipeline-edit" },
   ] },
   { id: "reels", label: "Reels in", icon: Boxes, children: [
     { id: "reels-entries", label: "Entries", view: "reels-entries" },
@@ -142,8 +137,9 @@ const NAV_GROUPS = [
 ];
 
 const VIEW_TITLES = {
-  "dashboard": "Dashboard", "masters-suppliers": "Suppliers", "masters-brands": "Brands",
+  "dashboard": "Overview", "masters-suppliers": "Suppliers", "masters-brands": "Brands",
   "masters-customers": "Customers", "masters-sizes": "Packet sizes", "masters-lifters": "Lifters",
+  "pipeline-entries": "Reels in Pipeline — Entries", "pipeline-report": "Reels in Pipeline — Report", "pipeline-edit": "Reels in Pipeline — Edit",
   "reels-entries": "Reels in — Entries", "reels-report": "Reels in — Report", "reels-edit": "Reels in — Edit",
   "hold-entries": "Hold / Release Reels", "hold-report": "Held Reels Report",
   "purchases-entries": "Purchases — Entries", "purchases-report": "Purchases — Report", "purchases-edit": "Purchases — Edit",
@@ -156,76 +152,41 @@ function groupForView(view) {
   return g ? g.id : null;
 }
 
-function Sidebar({ view, setView, isAdmin, collapsed, setCollapsed, userEmail, role, onSignOut }) {
-  const activeGroup = groupForView(view);
-  const [openGroups, setOpenGroups] = useState(() => activeGroup ? [activeGroup] : []);
-
-  useEffect(() => {
-    if (activeGroup && !openGroups.includes(activeGroup)) {
-      setOpenGroups([activeGroup]);
-    }
-  }, [activeGroup]); // eslint-disable-line
-
-  const toggleGroup = (id) => {
-    setOpenGroups(prev => prev.includes(id) ? [] : [id]);
-  };
-
+/* ---------- shell pieces ---------- */
+function Rail({ view, setView, isAdmin, onSignOut }) {
+  const activeGroup = view === "dashboard" ? "dashboard" : view === "team" ? "team" : groupForView(view);
   const groups = isAdmin ? [...NAV_GROUPS, { id: "team", label: "Team", icon: Users, view: "team" }] : NAV_GROUPS;
-
+  const go = (g) => setView(g.view || (g.children && g.children[0].view));
   return (
-    <aside className={"sidebar no-print " + (collapsed ? "collapsed" : "")}>
-      <div className="sidebar-brand">
-        <div className="sidebar-brand-mark">SB</div>
-        {!collapsed && <div className="sidebar-brand-text"><div className="sidebar-brand-title">Sale Base Stock</div><div className="sidebar-brand-sub">Bleach board register</div></div>}
-      </div>
-      <nav className="sidebar-nav">
+    <aside className="rail no-print">
+      <div className="rail-logo"><Boxes size={20} /></div>
+      <nav className="rail-nav">
         {groups.map((g) => {
           const Icon = g.icon;
-          if (!g.children) {
-            return (
-              <button key={g.id} className={"sidebar-link " + (view === g.view ? "active" : "")} onClick={() => setView(g.view)} title={collapsed ? g.label : ""}>
-                <Icon size={17} />{!collapsed && <span>{g.label}</span>}
-              </button>
-            );
-          }
-          const isOpen = openGroups.includes(g.id);
           return (
-            <div key={g.id} className="sidebar-group">
-              <button
-                className={"sidebar-link sidebar-group-head " + (activeGroup === g.id ? "active-group" : "")}
-                onClick={() => (collapsed ? setCollapsed(false) : toggleGroup(g.id))}
-                title={collapsed ? g.label : ""}
-              >
-                <Icon size={17} />
-                {!collapsed && (
-                  <>
-                    <span>{g.label}</span>
-                    <ChevronDown size={14} className={"sidebar-chevron " + (isOpen ? "open" : "")} />
-                  </>
-                )}
-              </button>
-              {!collapsed && (
-                <div className={"sidebar-children " + (isOpen ? "open" : "")}>
-                  {g.children.map((c) => (
-                    <button key={c.id} className={"sidebar-sublink " + (view === c.view ? "active" : "")} onClick={() => setView(c.view)}>{c.label}</button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <button key={g.id} className={"rail-btn " + (activeGroup === g.id ? "active" : "")} title={g.label} onClick={() => go(g)}>
+              <Icon size={19} />
+            </button>
           );
         })}
       </nav>
-      <div className="sidebar-footer">
-        {!collapsed && <div className="sidebar-user"><span>{userEmail}</span><span className="sidebar-role">{role}</span></div>}
-        <button className="sidebar-collapse-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? "Expand" : "Collapse"}>
-          <ChevronRight size={14} style={{ transform: collapsed ? "none" : "rotate(180deg)" }} />
-        </button>
-        <button className="sidebar-signout" onClick={onSignOut} title="Sign out"><LogOut size={15} />{!collapsed && <span>Sign out</span>}</button>
+      <div className="rail-foot">
+        <button className="rail-btn" title="Sign out" onClick={onSignOut}><LogOut size={18} /></button>
       </div>
     </aside>
   );
 }
-
+function SubNav({ view, setView }) {
+  const g = NAV_GROUPS.find((g) => g.children && g.children.some((c) => c.view === view));
+  if (!g) return null;
+  return (
+    <div className="pill-tabs no-print">
+      {g.children.map((c) => (
+        <button key={c.id} className={"pill " + (view === c.view ? "on" : "")} onClick={() => setView(c.view)}>{c.label}</button>
+      ))}
+    </div>
+  );
+}
 function Stamp({ children, tone = "gray" }) { return <span className={`stamp stamp-${tone}`}>{children}</span>; }
 function Field({ label, children }) { return <label className="field"><span>{label}</span>{children}</label>; }
 function EmptyRow({ children }) { return <div className="empty-row">{children}</div>; }
@@ -239,7 +200,6 @@ function SectionHead({ title, onPrint }) {
   );
 }
 function FormDivider({ label }) { return <div className="form-divider"><span>{label}</span></div>; }
-
 function SortControl({ value, onChange, options }) {
   return (
     <Field label="Sort by">
@@ -255,7 +215,6 @@ function SortControl({ value, onChange, options }) {
     </Field>
   );
 }
-
 function MultiSelect({ options, values, onChange, placeholder }) {
   const [open, setOpen] = useState(false);
   const toggle = (v) => { onChange(values.includes(v) ? values.filter((x) => x !== v) : [...values, v]); };
@@ -281,7 +240,6 @@ function MultiSelect({ options, values, onChange, placeholder }) {
     </div>
   );
 }
-
 function printHTML(title, bodyHtml) {
   const iframe = document.createElement("iframe");
   iframe.style.position = "fixed"; iframe.style.right = "0"; iframe.style.bottom = "0";
@@ -290,22 +248,22 @@ function printHTML(title, bodyHtml) {
   const doc = iframe.contentWindow.document;
   doc.open();
   doc.write(`<!DOCTYPE html><html><head><title>${esc(title)}</title><style>
-* { box-sizing: border-box; }
-body { font-family: Arial, Helvetica, sans-serif; color:#23261F; padding:24px; }
-h1 { font-size:17px; text-transform:uppercase; margin:0 0 4px; }
-.meta { font-size:11px; color:#666; margin-bottom:18px; }
-h2 { font-size:12px; text-transform:uppercase; background:#eeece3; padding:5px 8px; margin:18px 0 0; }
-h3 { font-size:10.5px; text-transform:uppercase; color:#555; margin:10px 0 2px; }
-table { width:100%; border-collapse:collapse; font-size:11px; margin-bottom:4px; }
-th, td { padding:5px 7px; border-bottom:1px solid #ccc; text-align:left; }
-th { font-size:9px; text-transform:uppercase; color:#666; border-bottom:1.5px solid #23261F; }
-tfoot td { font-weight:bold; border-top:1.5px solid #23261F; border-bottom:none; }
-.tag { font-family:monospace; }
-</style></head><body>
-<h1>${esc(title)}</h1>
-<div class="meta">Printed ${esc(new Date().toLocaleString("en-GB"))}</div>
-${bodyHtml}
-</body></html>`);
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; color:#23261F; padding:24px; }
+    h1 { font-size:17px; text-transform:uppercase; margin:0 0 4px; }
+    .meta { font-size:11px; color:#666; margin-bottom:18px; }
+    h2 { font-size:12px; text-transform:uppercase; background:#eeece3; padding:5px 8px; margin:18px 0 0; }
+    h3 { font-size:10.5px; text-transform:uppercase; color:#555; margin:10px 0 2px; }
+    table { width:100%; border-collapse:collapse; font-size:11px; margin-bottom:4px; }
+    th, td { padding:5px 7px; border-bottom:1px solid #ccc; text-align:left; }
+    th { font-size:9px; text-transform:uppercase; color:#666; border-bottom:1.5px solid #23261F; }
+    tfoot td { font-weight:bold; border-top:1.5px solid #23261F; border-bottom:none; }
+    .tag { font-family:monospace; }
+  </style></head><body>
+    <h1>${esc(title)}</h1>
+    <div class="meta">Printed ${esc(new Date().toLocaleString("en-GB"))}</div>
+    ${bodyHtml}
+  </body></html>`);
   doc.close();
   setTimeout(() => {
     iframe.contentWindow.focus();
@@ -313,7 +271,6 @@ ${bodyHtml}
     setTimeout(() => { if (iframe.parentNode) document.body.removeChild(iframe); }, 1000);
   }, 250);
 }
-
 function LotPicker({ rowKey, lots, value, onChange, labelFn, placeholder }) {
   const selected = lots.find((l) => l.id === value);
   const [query, setQuery] = useState(selected ? labelFn(selected) : "");
@@ -332,13 +289,11 @@ function LotPicker({ rowKey, lots, value, onChange, labelFn, placeholder }) {
     </div>
   );
 }
-
 function groupByDate(arr) {
   const m = {};
   arr.forEach((x) => { (m[x.date] = m[x.date] || []).push(x); });
   return Object.entries(m).sort((a, b) => (a[0] < b[0] ? 1 : -1));
 }
-
 function sortWithin(arr, sortState, getters) {
   if (!sortState || sortState.field === "entry") return arr;
   const getter = getters[sortState.field];
@@ -351,7 +306,6 @@ function LoginScreen({ onAuthed }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [fullName, setFullName] = useState("");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(""); const [notice, setNotice] = useState("");
-
   const submit = async () => {
     setErr(""); setNotice(""); setBusy(true);
     try {
@@ -380,12 +334,11 @@ function LoginScreen({ onAuthed }) {
       setBusy(false);
     }
   };
-
   return (
     <div className="login-page">
       <Style />
       <div className="login-card">
-        <div className="eyebrow">Bleach board reel & production register</div>
+        <div className="login-logo"><Boxes size={22} /></div>
         <h1 className="login-title">Sale Base Stock</h1>
         <div className="login-sub">{mode === "signin" ? "Sign in to continue" : mode === "signup" ? "Create an account" : "Reset your password"}</div>
         {mode === "signup" && <Field label="Full name (optional)"><input value={fullName} onChange={(e) => setFullName(e.target.value)} /></Field>}
@@ -413,7 +366,6 @@ function LoginScreen({ onAuthed }) {
 export default function ReelStockManager() {
   const [booting, setBooting] = useState(true);
   const [session, setSession] = useState(null);
-
   useEffect(() => {
     (async () => {
       const rt = await loadRefreshToken();
@@ -430,9 +382,7 @@ export default function ReelStockManager() {
       }
     })();
   }, []);
-
   const handleSignOut = async () => { setAccessToken(null); await clearRefreshToken(); setSession(null); };
-
   if (booting) return <div className="login-page"><Style /><div className="boot-loader"><Loader2 className="spin" size={22} /><span>Checking session...</span></div></div>;
   if (!session) return <LoginScreen onAuthed={setSession} />;
   return <AuthedApp session={session} onSignOut={handleSignOut} />;
@@ -443,8 +393,6 @@ function AuthedApp({ session, onSignOut }) {
   const [loadError, setLoadError] = useState("");
   const [profile, setProfile] = useState(null);
   const [view, setView] = useState("dashboard");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
   const [suppliers, setSuppliers] = useState([]);
   const [brands, setBrands] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -454,6 +402,7 @@ function AuthedApp({ session, onSignOut }) {
   const [purchases, setPurchases] = useState([]);
   const [productions, setProductions] = useState([]);
   const [productionItems, setProductionItems] = useState([]);
+  const [pipeline, setPipeline] = useState([]);
 
   useEffect(() => {
     setAccessToken(session.accessToken);
@@ -465,13 +414,12 @@ function AuthedApp({ session, onSignOut }) {
           setLoading(false); return;
         }
         setProfile(profRows[0]);
-
-        const [su, br, cu, sz, li, re, pu, pr, pi] = await Promise.all([
+        const [su, br, cu, sz, li, re, pu, pr, pi, pl] = await Promise.all([
           sbList("suppliers"), sbList("brands"), sbList("customers"), sbList("sizes"), sbList("lifters"),
-          sbList("reels"), sbList("purchases"), sbList("productions"), sbList("production_items"),
+          sbList("reels"), sbList("purchases"), sbList("productions"), sbList("production_items"), sbList("pipeline"),
         ]);
         setSuppliers(su); setBrands(br); setCustomers(cu); setSizes(sz); setLifters(li);
-        setReels(re); setPurchases(pu); setProductions(pr); setProductionItems(pi);
+        setReels(re); setPurchases(pu); setProductions(pr); setProductionItems(pi); setPipeline(pl);
       } catch (e) {
         setLoadError(e.message || "Failed to load data.");
       } finally {
@@ -490,6 +438,7 @@ function AuthedApp({ session, onSignOut }) {
     purchases: (v) => { const p = purchases; setPurchases(v); return syncTable("purchases", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
     productions: (v) => { const p = productions; setProductions(v); return syncTable("productions", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
     productionItems: (v) => { const p = productionItems; setProductionItems(v); return syncTable("production_items", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
+    pipeline: (v) => { const p = pipeline; setPipeline(v); return syncTable("pipeline", p, v).catch((e) => { alert("Save failed: " + e.message); throw e; }); },
   };
 
   const supplierName = (id) => suppliers.find((s) => s.id === id)?.name || "—";
@@ -509,7 +458,6 @@ function AuthedApp({ session, onSignOut }) {
   const usedWeightForLot = (lotId, excludeProductionId) => productions
     .filter((p) => p.lotId === lotId && p.id !== excludeProductionId)
     .reduce((a, p) => a + itemsWeightFor(p.id) + Number(p.wastageKg || 0), 0);
-
   const remainingAfterProduction = (productionId) => {
     const p = productions.find((x) => x.id === productionId);
     if (!p) return 0;
@@ -524,7 +472,6 @@ function AuthedApp({ session, onSignOut }) {
     const usedUpToHere = upToHere.reduce((a, x) => a + itemsWeightFor(x.id) + Number(x.wastageKg || 0), 0);
     return Math.max(0, Number(lot.weight) - usedUpToHere);
   };
-
   const totalPacketWeightForLot = (lotId) => productions
     .filter((p) => p.lotId === lotId)
     .reduce((a, p) => a + itemsWeightFor(p.id), 0);
@@ -538,25 +485,28 @@ function AuthedApp({ session, onSignOut }) {
       const closedOut = prods.some((p) => p.closeOut);
       const usedKg = usedWeightForLot(lot.id);
       let status, remaining;
-
-      if (purchase) {
-        status = "purchased"; remaining = 0;
-      } else if (lot.isHeld) {
-        status = "held";
-        remaining = Math.max(0, Number(lot.weight) - usedKg);
-      } else if (closedOut) {
-        status = "converted"; remaining = 0;
-      } else {
+      if (purchase) { status = "purchased"; remaining = 0; }
+      else if (lot.isHeld) { status = "held"; remaining = Math.max(0, Number(lot.weight) - usedKg); }
+      else if (closedOut) { status = "converted"; remaining = 0; }
+      else {
         remaining = Math.max(0, Number(lot.weight) - usedKg);
         status = usedKg === 0 ? "consignment" : remaining > 0 ? "partial" : "converted";
       }
-
       const available = status !== "purchased" && status !== "converted" && remaining > 0.0001;
-
       map[lot.id] = { status, usedKg, remaining, purchase, productions: prods, closedOut, available };
     });
+    pipeline.forEach((p) => {
+      if (p.status === "pipeline") {
+        map[p.id] = { status: "pipeline", usedKg: 0, remaining: Number(p.weight), purchase: null, productions: [], closedOut: false, available: false, isPipeline: true };
+      }
+    });
     return map;
-  }, [reels, purchases, productions, productionItems, sizes, brands]);
+  }, [reels, purchases, productions, productionItems, sizes, brands, pipeline]);
+
+  const allStockLots = useMemo(() => [
+    ...reels,
+    ...pipeline.filter((p) => p.status === "pipeline").map((p) => ({ ...p, isPipeline: true })),
+  ], [reels, pipeline]);
 
   const remainingForLot = (lotId, excludePurchaseId) => {
     const lot = reels.find((r) => r.id === lotId);
@@ -565,26 +515,17 @@ function AuthedApp({ session, onSignOut }) {
     if (otherPurchase) return 0;
     return Math.max(0, Number(lot.weight) - usedWeightForLot(lotId));
   };
-
   const reelLabelMap = useMemo(() => buildSequentialLabelMap(reels, "batchId", "RI"), [reels]);
   const purchaseLabelMap = useMemo(() => buildSequentialLabelMap(purchases, "batchId", "PR"), [purchases]);
   const productionLabelMap = useMemo(() => buildSequentialLabelMap(productions, "id", "PD"), [productions]);
+  const pipelineLabelMap = useMemo(() => buildSequentialLabelMap(pipeline, "batchId", "PL"), [pipeline]);
 
   const totals = useMemo(() => {
-    const godownWeight = reels.filter((r) => {
-      const info = lotInfo[r.id];
-      return info && info.status === "consignment";
-    }).reduce((a, r) => a + (lotInfo[r.id]?.remaining || 0), 0);
-
-    const godownReelsCount = reels.filter((r) => {
-      const info = lotInfo[r.id];
-      return info && info.status === "consignment";
-    }).length;
-
+    const godownWeight = reels.filter((r) => lotInfo[r.id] && lotInfo[r.id].status === "consignment").reduce((a, r) => a + (lotInfo[r.id]?.remaining || 0), 0);
+    const godownReelsCount = reels.filter((r) => lotInfo[r.id] && lotInfo[r.id].status === "consignment").length;
     const purchaseValue = purchases.reduce((a, p) => a + Number(p.weight) * Number(p.rate), 0);
     const purchaseWeight = purchases.reduce((a, p) => a + Number(p.weight), 0);
     const packetsProduced = productionItems.reduce((a, it) => a + Number(it.packetsProduced), 0);
-
     const buyerMap = new Map();
     purchases.forEach((p) => {
       const name = purchasedByLabel(p).trim() || "Unspecified";
@@ -593,7 +534,6 @@ function AuthedApp({ session, onSignOut }) {
       b.weight += Number(p.weight); b.amount += Number(p.weight) * Number(p.rate); b.count += 1;
     });
     const purchasedByBreakdown = [...buyerMap.values()].sort((a, b) => b.amount - a.amount);
-
     return { godownWeight, godownReelsCount, purchaseValue, purchaseWeight, packetsProduced, purchasedByBreakdown };
   }, [reels, lotInfo, purchases, productionItems, customers]);
 
@@ -614,22 +554,32 @@ function AuthedApp({ session, onSignOut }) {
   const isAdmin = profile.role === "admin";
 
   const ctx = {
-    suppliers, brands, customers, sizes, lifters, reels, purchases, productions, productionItems, persist,
+    suppliers, brands, customers, sizes, lifters, reels, purchases, productions, productionItems, pipeline, persist,
     supplierName, brandName, customerName, lifterName, purchasedByLabel, packetWeightKg, sizeLabel, reelDesc, avgGramForEntry, avgGramForLot, itemsFor, itemsWeightFor,
-    lotInfo, totals, usedWeightForLot, remainingForLot, remainingAfterProduction, totalPacketWeightForLot,
-    reelLabelMap, purchaseLabelMap, productionLabelMap, profile, can, isAdmin,
+    lotInfo, totals, usedWeightForLot, remainingForLot, remainingAfterProduction, totalPacketWeightForLot, allStockLots,
+    reelLabelMap, purchaseLabelMap, productionLabelMap, pipelineLabelMap, profile, can, isAdmin,
   };
 
   return (
     <div className="app-shell app-shell-sidebar">
       <Style />
       <div className="app-layout">
-        <Sidebar view={view} setView={setView} isAdmin={isAdmin} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed}
-          userEmail={session.user.email} role={profile.role} onSignOut={onSignOut} />
+        <Rail view={view} setView={setView} isAdmin={isAdmin} onSignOut={onSignOut} />
         <div className="main-area">
-          <header className="top-bar no-print">
-            <h1>{VIEW_TITLES[view] || "Overview"}</h1>
+          <header className="page-head no-print">
+            <div>
+              <h1>{VIEW_TITLES[view] || "Overview"}</h1>
+              <div className="page-sub">{new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+            </div>
+            <div className="user-chip">
+              <div className="user-avatar">{(session.user.email || "U").charAt(0).toUpperCase()}</div>
+              <div>
+                <div className="user-mail">{session.user.email}</div>
+                <div className="user-role">{profile.role}</div>
+              </div>
+            </div>
           </header>
+          <SubNav view={view} setView={setView} />
           <main className="app-main">
             {view === "dashboard" && <Dashboard ctx={ctx} />}
             {view === "masters-suppliers" && <NameListEditor title="Suppliers" items={ctx.suppliers} setItems={ctx.persist.suppliers} withContact blockedIds={ctx.reels.map((r) => r.supplierId)} placeholder="e.g. Punjab Board Mills" canManage={can("canManageMasters")} isAdmin={isAdmin} />}
@@ -637,22 +587,20 @@ function AuthedApp({ session, onSignOut }) {
             {view === "masters-customers" && <NameListEditor title="Customers" items={ctx.customers} setItems={ctx.persist.customers} withContact blockedIds={[]} placeholder="e.g. Abbasi Traders" canManage={can("canManageMasters")} isAdmin={isAdmin} />}
             {view === "masters-sizes" && <SizesEditor ctx={ctx} canManage={can("canManageMasters")} isAdmin={isAdmin} />}
             {view === "masters-lifters" && <NameListEditor title="Lifters" items={ctx.lifters} setItems={ctx.persist.lifters} withContact blockedIds={[]} placeholder="e.g. Ahmed Lifting" canManage={can("canManageMasters")} isAdmin={isAdmin} />}
-
+            {view === "pipeline-entries" && <PipelineEntriesTab ctx={ctx} />}
+            {view === "pipeline-report" && <PipelineReportView ctx={ctx} />}
+            {view === "pipeline-edit" && <PipelineEditTab ctx={ctx} />}
             {view === "reels-entries" && <ReelsEntriesTab ctx={ctx} />}
             {view === "reels-report" && <ReelsReportView ctx={ctx} />}
             {view === "reels-edit" && <ReelsEditTab ctx={ctx} />}
-
             {view === "hold-entries" && <HoldEntriesTab ctx={ctx} />}
             {view === "hold-report" && <HoldReportView ctx={ctx} />}
-
             {view === "purchases-entries" && <PurchasesEntriesTab ctx={ctx} />}
             {view === "purchases-report" && <PurchaseReportView ctx={ctx} />}
             {view === "purchases-edit" && <PurchaseEditTab ctx={ctx} />}
-
             {view === "production-entries" && <ProductionEntriesTab ctx={ctx} />}
             {view === "production-report" && <ProductionReportView ctx={ctx} />}
             {view === "production-edit" && <ProductionEditTab ctx={ctx} />}
-
             {view === "stock-current" && <StockReportTab ctx={ctx} />}
             {view === "stock-quantity" && <ReelsQuantityTab ctx={ctx} />}
             {view === "team" && isAdmin && <TeamTab ctx={ctx} />}
@@ -663,76 +611,73 @@ function AuthedApp({ session, onSignOut }) {
   );
 }
 
-function TeamTab() {
-  const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [savingId, setSavingId] = useState(null);
-  const [err, setErr] = useState("");
-  const permKeys = [
-    { key: "canAddEntries", label: "Add" }, { key: "canEditEntries", label: "Edit" },
-    { key: "canDeleteEntries", label: "Delete" }, { key: "canManageMasters", label: "Masters" },
-    { key: "canViewReports", label: "Reports" },
-  ];
-  const load = async () => {
-    setLoading(true); setErr("");
-    try { setRows(await sbList("profiles", "?select=*&order=created_at.asc")); }
-    catch (e) { setErr(e.message); }
-    setLoading(false);
-  };
-  useEffect(() => { load(); }, []);
-  const update = (id, patch) => setRows(rows.map((r) => r.id === id ? { ...r, ...patch } : r));
-  const save = async (row) => {
-    setSavingId(row.id);
-    try {
-      await sbUpdate("profiles", row.id, {
-        role: row.role, canAddEntries: row.canAddEntries, canEditEntries: row.canEditEntries,
-        canDeleteEntries: row.canDeleteEntries, canManageMasters: row.canManageMasters, canViewReports: row.canViewReports,
-      });
-    } catch (e) { alert("Save failed: " + e.message); }
-    setSavingId(null);
-  };
-  return (
-    <div>
-      <SectionHead title="Team &amp; access" />
-      <div className="computed" style={{ marginBottom: 14 }}>Names are whatever was given at signup. Reports access is required for almost everything else.</div>
-      {loading && <EmptyRow>Loading team…</EmptyRow>}
-      {err && <LockedNote text={err} />}
-      {!loading && rows.length === 0 && <EmptyRow>No accounts yet.</EmptyRow>}
-      {!loading && rows.map((r) => (
-        <div key={r.id} className="team-row">
-          <div className="team-row-name">{r.fullName || "—"}</div>
-          <select value={r.role} onChange={(e) => update(r.id, { role: e.target.value })}>
-            <option value="employee">Employee</option>
-            <option value="admin">Admin</option>
-          </select>
-          {permKeys.map((p) => (
-            <label key={p.key} className="checkbox-field team-perm">
-              <input type="checkbox" checked={!!r[p.key]} disabled={r.role === "admin"} onChange={(e) => update(r.id, { [p.key]: e.target.checked })} />
-              <span>{p.label}</span>
-            </label>
-          ))}
-          <button className="btn" onClick={() => save(r)} disabled={savingId === r.id}>{savingId === r.id ? "Saving…" : "Save"}</button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
+/* ---------------- dashboard (horizon light) ---------------- */
 function Dashboard({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="You don't have report-viewing access yet." />;
-  const { totals, reels, suppliers, sizes } = ctx;
+  const { totals, reels, suppliers, sizes, pipeline, lotInfo, pipelineLabelMap, supplierName, brandName } = ctx;
+  const openPipeline = pipeline.filter((p) => p.status === "pipeline");
+  const pipelineWeight = openPipeline.reduce((a, p) => a + Number(p.weight), 0);
+  const heldCount = reels.filter((r) => r.isHeld).length;
   const cards = [
-    { label: "In-godown reels", value: num(totals.godownReelsCount, 0) },
-    { label: "In-godown weight", value: num(totals.godownWeight) + " kg" },
-    { label: "Purchase weight total", value: num(totals.purchaseWeight) + " kg" },
-    { label: "Total purchased value", value: money(totals.purchaseValue) },
-    { label: "Suppliers / sizes on file", value: `${suppliers.length} / ${sizes.length}` },
+    { label: "In-godown reels", value: num(totals.godownReelsCount, 0), sub: `${num(totals.godownWeight)} kg in godown`, tone: "violet", icon: Boxes },
+    { label: "In pipeline", value: num(openPipeline.length, 0), sub: `${num(pipelineWeight)} kg expected`, tone: "amber", icon: Clock },
+    { label: "Purchased value", value: money(totals.purchaseValue), sub: `${num(totals.purchaseWeight)} kg purchased`, tone: "green", icon: Receipt },
+    { label: "Packets produced", value: num(totals.packetsProduced, 0), sub: `${heldCount} reel(s) on hold`, tone: "cyan", icon: Factory },
   ];
+  const breakdown = ["consignment", "partial", "converted", "purchased", "held"].map((s) => ({
+    s, count: reels.filter((r) => lotInfo[r.id] && lotInfo[r.id].status === s).length,
+  }));
+  const maxCount = Math.max(1, ...breakdown.map((b) => b.count));
+  const barColor = { consignment: "#7551FF", partial: "#FFB547", converted: "#0BC0EA", purchased: "#01B574", held: "#E31A1A" };
+  const pipelineBatches = useMemo(() => {
+    const map = new Map();
+    openPipeline.forEach((p) => { if (!map.has(p.batchId)) map.set(p.batchId, []); map.get(p.batchId).push(p); });
+    return [...map.entries()].map(([batchId, lots]) => ({
+      batchId, label: pipelineLabelMap.get(batchId), date: lots[0].date, supplierId: lots[0].supplierId,
+      count: lots.length, weight: lots.reduce((a, l) => a + Number(l.weight), 0),
+    })).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 6);
+  }, [pipeline, pipelineLabelMap]);
   return (
     <div>
-      <div className="metric-grid">{cards.map((c) => (
-        <div className="metric-card" key={c.label}><div className="metric-label">{c.label}</div><div className="metric-value">{c.value}</div></div>
-      ))}</div>
+      <div className="metric-grid">
+        {cards.map((c) => {
+          const Icon = c.icon;
+          return (
+            <div className={"metric-card tone-" + c.tone} key={c.label}>
+              <div className="metric-top">
+                <div className="metric-label">{c.label}</div>
+                <div className="metric-icon"><Icon size={16} /></div>
+              </div>
+              <div className="metric-value">{c.value}</div>
+              <div className="metric-sub">{c.sub}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="dash-grid">
+        <div className="panel">
+          <h3 className="panel-title">Stock mix</h3>
+          {reels.length === 0 && <EmptyRow>No reels logged yet.</EmptyRow>}
+          {breakdown.map((b) => (
+            <div className="bar-row" key={b.s}>
+              <div className="bar-label"><span>{statusLabel(b.s)}</span><span>{b.count} reels</span></div>
+              <div className="bar-track"><div className="bar-fill" style={{ width: `${(b.count / maxCount) * 100}%`, background: barColor[b.s] }} /></div>
+            </div>
+          ))}
+          <div className="panel-foot">{suppliers.length} suppliers · {sizes.length} packet sizes on file</div>
+        </div>
+        <div className="panel">
+          <h3 className="panel-title">Pipeline watch</h3>
+          {pipelineBatches.length === 0 && <EmptyRow>Nothing in pipeline right now.</EmptyRow>}
+          {pipelineBatches.map((b) => (
+            <div className="watch-row" key={b.batchId}>
+              <span className="mono-tag pl-tag">{b.label}</span>
+              <span className="watch-main">{supplierName(b.supplierId)} · {fmtDate(b.date)}</span>
+              <span className="watch-val">{b.count} reels · {num(b.weight)} kg</span>
+            </div>
+          ))}
+        </div>
+      </div>
       {totals.purchasedByBreakdown.length > 0 && (
         <>
           <h3 className="sub-heading">Purchased by</h3>
@@ -749,13 +694,14 @@ function Dashboard({ ctx }) {
       {reels.length === 0 && (
         <div className="invite-panel">
           <div className="invite-title">Start the register</div>
-          <div className="invite-body">Add a supplier and brand in Setup, then log the first reels received under Reels in → Entries.</div>
+          <div className="invite-body">Add a supplier and brand in Setup, then log incoming reels under Reels in Pipeline → Entries, or received reels under Reels in → Entries.</div>
         </div>
       )}
     </div>
   );
 }
 
+/* ---------------- masters ---------------- */
 function NameListEditor({ title, items, setItems, withContact, blockedIds, placeholder, canManage, isAdmin }) {
   const [name, setName] = useState(""); const [contact, setContact] = useState("");
   const [editId, setEditId] = useState(null); const [editName, setEditName] = useState(""); const [editContact, setEditContact] = useState("");
@@ -770,10 +716,10 @@ function NameListEditor({ title, items, setItems, withContact, blockedIds, place
         <div className="ticket-form">
           <Field label={title.slice(0, -1) + " name"}><input value={name} onChange={(e) => setName(e.target.value)} placeholder={placeholder} /></Field>
           {withContact && <Field label="Contact (optional)"><input value={contact} onChange={(e) => setContact(e.target.value)} /></Field>}
-          <button className="btn primary" onClick={add}>Add</button>
+          <button className="btn primary" onClick={add}><Plus size={14} /> Add</button>
         </div>
       )}
-      <div className="list">
+      <div className="list panel-list">
         {items.length === 0 && <EmptyRow>Nothing added yet.</EmptyRow>}
         {items.map((it) => (
           <div className="row" key={it.id}>
@@ -799,7 +745,6 @@ function NameListEditor({ title, items, setItems, withContact, blockedIds, place
     </div>
   );
 }
-
 function SizesEditor({ ctx, canManage, isAdmin }) {
   const { sizes, brands, persist, packetWeightKg, sizeLabel, productionItems } = ctx;
   const blank = { width: "", length: "", gsm: "", brandId: brands[0]?.id || "" };
@@ -827,10 +772,10 @@ function SizesEditor({ ctx, canManage, isAdmin }) {
           <Field label="Gram (GSM)"><input type="number" value={f.gsm} onChange={set("gsm")} /></Field>
           <Field label="Brand"><select value={f.brandId} onChange={set("brandId")}>{brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></Field>
           <div className="computed span-2">Packet weight: <b>{num(wt, 4)} kg</b></div>
-          <button className="btn primary span-2" onClick={add}>Add size</button>
+          <button className="btn primary span-2" onClick={add}><Plus size={14} /> Add size</button>
         </div>
       )}
-      <div className="list">
+      <div className="list panel-list">
         {sizes.length === 0 && <EmptyRow>No packet sizes yet.</EmptyRow>}
         {sizes.map((sz) => (
           <div className="row" key={sz.id}>
@@ -859,42 +804,396 @@ function SizesEditor({ ctx, canManage, isAdmin }) {
   );
 }
 
+/* ---------------- pipeline ---------------- */
+function PipelineEntriesTab({ ctx }) {
+  const { suppliers, brands, lifters, pipeline, persist, pipelineLabelMap, supplierName, brandName, reelLabelMap } = ctx;
+  const canAdd = ctx.can("canAddEntries"); const canDelete = ctx.can("canDeleteEntries");
+  const [supplierId, setSupplierId] = useState(suppliers[0]?.id || "");
+  const [date, setDate] = useState(todayISO());
+  const [lifterId, setLifterId] = useState("");
+  const blankRow = () => ({ key: uid(), lotNo: "", brandId: brands[0]?.id || "", gsm: "", width: "", weight: "", detail: "" });
+  const [rows, setRows] = useState([blankRow()]);
+  const [lastSaved, setLastSaved] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  useEffect(() => { if (!supplierId && suppliers[0]) setSupplierId(suppliers[0].id); }, [suppliers]);
+  const updateRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
+  const addRow = () => setRows([...rows, blankRow()]);
+  const removeRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
+  const saveAll = () => {
+    if (!supplierId || !date) return;
+    const valid = rows.filter((r) => r.lotNo.trim() && r.brandId && r.gsm && r.width && r.weight);
+    if (!valid.length) return;
+    const batchId = uid();
+    const newOnes = valid.map((r) => ({
+      id: uid(), batchId, lotNo: r.lotNo.trim(), supplierId, brandId: r.brandId, gsm: Number(r.gsm), width: Number(r.width),
+      weight: Number(r.weight), detail: r.detail.trim(), date, lifterId: lifterId || null, status: "pipeline",
+    }));
+    persist.pipeline([...pipeline, ...newOnes]);
+    setLastSaved({ count: newOnes.length, batchId });
+    setRows([blankRow()]);
+  };
+  const batches = useMemo(() => {
+    const map = new Map();
+    pipeline.forEach((p) => { if (!map.has(p.batchId)) map.set(p.batchId, []); map.get(p.batchId).push(p); });
+    return [...map.entries()].map(([batchId, lots]) => ({
+      batchId, label: pipelineLabelMap.get(batchId), date: lots[0].date, supplierId: lots[0].supplierId, lots,
+      totalWeight: lots.reduce((a, l) => a + Number(l.weight), 0),
+      openCount: lots.filter((l) => l.status === "pipeline").length,
+    })).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  }, [pipeline, pipelineLabelMap]);
+  const deleteBatch = (batchId) => {
+    const lots = pipeline.filter((p) => p.batchId === batchId);
+    if (lots.some((l) => l.status !== "pipeline")) return;
+    if (!confirmDelete(`pipeline entry ${pipelineLabelMap.get(batchId)} (${lots.length} reels)`)) return;
+    persist.pipeline(pipeline.filter((p) => p.batchId !== batchId));
+  };
+  const disabled = suppliers.length === 0 || brands.length === 0;
+  return (
+    <div>
+      <SectionHead title="Add reels to pipeline" />
+      <div className="info-banner">Reels saved here are marked <b>In Pipeline</b>. Import them into godown from <b>Reels in → Entries → Import from Pipeline</b>.</div>
+      {canAdd && (
+        <>
+          {disabled && <EmptyRow>Add a supplier and at least one brand first.</EmptyRow>}
+          {!disabled && (
+            <div className="ticket-form" style={{ maxWidth: 940 }}>
+              <div className="grid-2">
+                <Field label="Supplier"><select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+                <Field label="Expected date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
+              </div>
+              <Field label="Lifter">
+                <select value={lifterId} onChange={(e) => setLifterId(e.target.value)}>
+                  <option value="">Select Lifter...</option>
+                  {lifters.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </select>
+              </Field>
+              <FormDivider label="Reels in this pipeline entry" />
+              <div className="rows-table">
+                <div className="rows-head cols-7"><span>Lot no</span><span>Brand</span><span>Gram</span><span>Width</span><span>Weight</span><span>Detail</span><span /></div>
+                {rows.map((r) => (
+                  <div className="rows-line cols-7" key={r.key}>
+                    <input value={r.lotNo} onChange={(e) => updateRow(r.key, { lotNo: e.target.value })} placeholder="e.g. 9938" />
+                    <select value={r.brandId} onChange={(e) => updateRow(r.key, { brandId: e.target.value })}>{brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
+                    <input type="number" value={r.gsm} onChange={(e) => updateRow(r.key, { gsm: e.target.value })} placeholder="230" />
+                    <input type="number" value={r.width} onChange={(e) => updateRow(r.key, { width: e.target.value })} placeholder="30" />
+                    <input type="number" value={r.weight} onChange={(e) => updateRow(r.key, { weight: e.target.value })} placeholder="647" />
+                    <input value={r.detail} onChange={(e) => updateRow(r.key, { detail: e.target.value })} placeholder="optional" />
+                    <button className="icon-btn" onClick={() => removeRow(r.key)}><Trash2 size={15} /></button>
+                  </div>
+                ))}
+              </div>
+              <div className="form-actions">
+                <button className="btn" onClick={addRow}><Plus size={14} /> Add reel row</button>
+                <button className="btn primary" onClick={saveAll}>Save to pipeline</button>
+              </div>
+              {lastSaved && <div className="computed">Saved {lastSaved.count} reel(s) under <b>{pipelineLabelMap.get(lastSaved.batchId)}</b> — status In Pipeline.</div>}
+            </div>
+          )}
+        </>
+      )}
+      <h3 className="sub-heading">Pipeline entries</h3>
+      {batches.length === 0 && <EmptyRow>No pipeline entries yet.</EmptyRow>}
+      {batches.map((b) => {
+        const isOpen = expanded === b.batchId;
+        return (
+          <div className="entry-card" key={b.batchId}>
+            <div className="entry-card-head" onClick={() => setExpanded(isOpen ? null : b.batchId)}>
+              <div className="entry-card-title">
+                {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                <span className="mono-tag pl-tag">{b.label}</span>
+                <span>{fmtDate(b.date)} · {supplierName(b.supplierId)} · {b.lots.length} reels · {num(b.totalWeight)} kg</span>
+                {b.openCount === b.lots.length ? <Stamp tone="indigo">In Pipeline</Stamp> : b.openCount === 0 ? <Stamp tone="green">Imported</Stamp> : <Stamp tone="amber">{b.openCount} open</Stamp>}
+              </div>
+              {canDelete && (
+                <div className="row-actions">
+                  <button className="icon-btn" onClick={(e) => { e.stopPropagation(); deleteBatch(b.batchId); }} disabled={b.openCount !== b.lots.length} title={b.openCount !== b.lots.length ? "Already imported — delete the RI entry to return it" : "Delete"}><Trash2 size={15} /></button>
+                </div>
+              )}
+            </div>
+            {isOpen && (
+              <div className="entry-card-body">
+                {b.lots.map((lot) => (
+                  <div className="row" key={lot.id}>
+                    <div>
+                      <div className="row-title">{brandName(lot.brandId)} · {lot.gsm}g {lot.width ? `· ${lot.width}"` : ""} <span className="mono-tag">Lot {lot.lotNo}</span></div>
+                      <div className="row-sub">{num(lot.weight)} kg{lot.detail ? ` · ${lot.detail}` : ""}{lot.lifterId ? ` · Lifter: ${ctx.lifterName(lot.lifterId)}` : ""}</div>
+                    </div>
+                    {lot.status === "pipeline" ? <Stamp tone="indigo">In Pipeline</Stamp> : <Stamp tone="green">In Godown · {reelLabelMap.get(lot.importedBatchId) || ""}</Stamp>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PipelineReportView({ ctx }) {
+  if (!ctx.can("canViewReports")) return <LockedNote text="No permission." />;
+  const { pipeline, suppliers, supplierName, brandName, lifterName, reelLabelMap, pipelineLabelMap } = ctx;
+  const [supplierFilter, setSupplierFilter] = useState([]);
+  const [statusFilter, setStatusFilter] = useState([]);
+  const [q, setQ] = useState(""); const [from, setFrom] = useState(""); const [to, setTo] = useState("");
+  const statusOptions = [{ value: "pipeline", label: "In Pipeline" }, { value: "imported", label: "Imported to Godown" }];
+  const supplierOptions = suppliers.map((s) => ({ value: s.id, label: s.name }));
+  const filtered = pipeline.filter((p) => {
+    if (supplierFilter.length && !supplierFilter.includes(p.supplierId)) return false;
+    if (statusFilter.length && !statusFilter.includes(p.status === "imported" ? "imported" : "pipeline")) return false;
+    if (from && p.date < from) return false;
+    if (to && p.date > to) return false;
+    if (q.trim()) {
+      const query = q.trim().toLowerCase();
+      const label = (pipelineLabelMap.get(p.batchId) || "").toLowerCase();
+      const hay = `${label} ${p.lotNo} ${brandName(p.brandId).toLowerCase()} ${supplierName(p.supplierId).toLowerCase()}`;
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  });
+  const groups = groupByDate(filtered);
+  const grandWeight = filtered.reduce((a, p) => a + Number(p.weight), 0);
+  const doPrint = () => {
+    let html = "";
+    groups.forEach(([d, lots]) => {
+      const tW = lots.reduce((a, l) => a + Number(l.weight), 0);
+      html += `<h2>${esc(fmtDate(d))} — ${lots.length} reel(s)</h2><table><thead><tr><th>PL</th><th>Lot</th><th>Item</th><th>Width</th><th>Supplier</th><th>Lifter</th><th>Status</th><th>Weight</th></tr></thead><tbody>`;
+      lots.forEach((p) => {
+        html += `<tr><td class="tag">${esc(pipelineLabelMap.get(p.batchId))}</td><td class="tag">${esc(p.lotNo)}</td><td>${esc(brandName(p.brandId))} ${p.gsm}g</td><td>${esc(p.width)}</td><td>${esc(supplierName(p.supplierId))}</td><td>${esc(lifterName(p.lifterId))}</td><td>${p.status === "imported" ? "In Godown " + esc(reelLabelMap.get(p.importedBatchId) || "") : "In Pipeline"}</td><td>${num(p.weight)}</td></tr>`;
+      });
+      html += `</tbody><tfoot><tr><td colspan="7">${lots.length} reel(s)</td><td>${num(tW)}</td></tr></tfoot></table>`;
+    });
+    html += `<h2>Grand total — ${filtered.length} reel(s)</h2><table><tbody><tr><td>Total weight</td><td>${num(grandWeight)} kg</td></tr></tbody></table>`;
+    printHTML("Pipeline report", html || "<p>No entries.</p>");
+  };
+  return (
+    <div>
+      <SectionHead title="Pipeline report" onPrint={doPrint} />
+      <div className="filter-bar no-print">
+        <Field label="Search"><div className="search-input"><Search size={13} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="PL, lot, brand..." /></div></Field>
+        <Field label="Supplier"><MultiSelect options={supplierOptions} values={supplierFilter} onChange={setSupplierFilter} /></Field>
+        <Field label="Status"><MultiSelect options={statusOptions} values={statusFilter} onChange={setStatusFilter} /></Field>
+        <Field label="From"><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
+        <Field label="To"><input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
+      </div>
+      {groups.length === 0 && <EmptyRow>No pipeline reels match.</EmptyRow>}
+      {groups.map(([d, lots]) => {
+        const tW = lots.reduce((a, l) => a + Number(l.weight), 0);
+        return (
+          <div key={d} className="date-block">
+            <div className="date-block-head">{fmtDate(d)} <span>{lots.length} reels · {num(tW)} kg</span></div>
+            <table className="ledger-table">
+              <thead><tr><th>PL</th><th>Lot</th><th>Item</th><th>Width</th><th>Supplier</th><th>Lifter</th><th>Status</th><th>Weight</th></tr></thead>
+              <tbody>
+                {lots.map((p) => (
+                  <tr key={p.id}>
+                    <td className="mono">{pipelineLabelMap.get(p.batchId)}</td>
+                    <td className="mono">{p.lotNo}</td>
+                    <td>{brandName(p.brandId)} · {p.gsm}g</td>
+                    <td className="mono">{p.width}</td>
+                    <td>{supplierName(p.supplierId)}</td>
+                    <td>{lifterName(p.lifterId)}</td>
+                    <td>{p.status === "imported" ? <Stamp tone="green">In Godown · {reelLabelMap.get(p.importedBatchId) || ""}</Stamp> : <Stamp tone="indigo">In Pipeline</Stamp>}</td>
+                    <td className="mono">{num(p.weight)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr><td colSpan={7}>{lots.length} reels</td><td className="mono">{num(tW)}</td></tr></tfoot>
+            </table>
+          </div>
+        );
+      })}
+      {filtered.length > 0 && (
+        <div className="report-grand-total"><span>Grand total — {filtered.length} reels</span><span className="mono">{num(grandWeight)} kg</span></div>
+      )}
+    </div>
+  );
+}
+
+function PipelineEditTab({ ctx }) {
+  const canEdit = ctx.can("canEditEntries"); const canDelete = ctx.can("canDeleteEntries");
+  if (!canEdit && !canDelete) return <LockedNote text="No permission." />;
+  const { pipeline, suppliers, brands, lifters, persist, supplierName, brandName, pipelineLabelMap, reelLabelMap } = ctx;
+  const [q, setQ] = useState("");
+  const [editId, setEditId] = useState(null); const [ef, setEf] = useState(null);
+  const open = pipeline.filter((p) => p.status === "pipeline");
+  const imported = pipeline.filter((p) => p.status !== "pipeline");
+  const startEdit = (p) => { setEditId(p.id); setEf({ lotNo: p.lotNo, supplierId: p.supplierId, brandId: p.brandId, gsm: p.gsm, width: p.width || "", weight: p.weight, detail: p.detail || "", date: p.date, lifterId: p.lifterId || "" }); };
+  const saveEdit = () => {
+    persist.pipeline(pipeline.map((p) => p.id === editId ? {
+      ...p, lotNo: ef.lotNo.trim(), supplierId: ef.supplierId, brandId: ef.brandId, gsm: Number(ef.gsm), width: Number(ef.width),
+      weight: Number(ef.weight), detail: ef.detail.trim(), date: ef.date, lifterId: ef.lifterId || null,
+    } : p));
+    setEditId(null);
+  };
+  const removeRow = (id) => { if (!confirmDelete("this pipeline reel")) return; persist.pipeline(pipeline.filter((p) => p.id !== id)); };
+  const filtered = open.filter((p) => {
+    if (!q.trim()) return true;
+    const query = q.trim().toLowerCase();
+    const label = (pipelineLabelMap.get(p.batchId) || "").toLowerCase();
+    return `${label} ${p.lotNo} ${brandName(p.brandId).toLowerCase()} ${supplierName(p.supplierId).toLowerCase()}`.includes(query);
+  });
+  const groups = groupByDate(filtered);
+  return (
+    <div>
+      <SectionHead title="Edit pipeline reels" />
+      <div className="filter-bar no-print"><Field label="Search"><div className="search-input"><Search size={13} /><input value={q} onChange={(e) => setQ(e.target.value)} /></div></Field></div>
+      {groups.length === 0 && <EmptyRow>Nothing open to edit.</EmptyRow>}
+      {groups.map(([d, lots]) => (
+        <div key={d} className="date-block">
+          <div className="date-block-head">{fmtDate(d)}</div>
+          <div className="list panel-list">
+            {lots.map((p) => (
+              <div className="row" key={p.id}>
+                {editId === p.id ? (
+                  <div className="edit-row grid-8">
+                    <input value={ef.lotNo} onChange={(e) => setEf({ ...ef, lotNo: e.target.value })} />
+                    <select value={ef.brandId} onChange={(e) => setEf({ ...ef, brandId: e.target.value })}>{brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
+                    <input type="number" value={ef.gsm} onChange={(e) => setEf({ ...ef, gsm: e.target.value })} />
+                    <input type="number" value={ef.width} onChange={(e) => setEf({ ...ef, width: e.target.value })} />
+                    <input type="number" value={ef.weight} onChange={(e) => setEf({ ...ef, weight: e.target.value })} />
+                    <select value={ef.supplierId} onChange={(e) => setEf({ ...ef, supplierId: e.target.value })}>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                    <select value={ef.lifterId} onChange={(e) => setEf({ ...ef, lifterId: e.target.value })}><option value="">No Lifter</option>{lifters.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
+                    <input type="date" value={ef.date} onChange={(e) => setEf({ ...ef, date: e.target.value })} />
+                    <button className="icon-btn" onClick={saveEdit}><Check size={15} /></button>
+                    <button className="icon-btn" onClick={() => setEditId(null)}><X size={15} /></button>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <div className="row-title">{brandName(p.brandId)} · {p.gsm}g {p.width ? `· ${p.width}"` : ""} <span className="mono-tag pl-tag">{pipelineLabelMap.get(p.batchId)}</span> <span className="mono-tag">Lot {p.lotNo}</span></div>
+                      <div className="row-sub">{supplierName(p.supplierId)} · {num(p.weight)} kg{p.detail ? ` · ${p.detail}` : ""}</div>
+                    </div>
+                    <div className="row-actions">
+                      <Stamp tone="indigo">In Pipeline</Stamp>
+                      {canEdit && <button className="icon-btn" onClick={() => startEdit(p)}><Pencil size={15} /></button>}
+                      {canDelete && <button className="icon-btn" onClick={() => removeRow(p.id)}><Trash2 size={15} /></button>}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      {imported.length > 0 && (
+        <>
+          <h3 className="sub-heading">Imported (locked)</h3>
+          <div className="list panel-list">
+            {imported.map((p) => (
+              <div className="row" key={p.id}>
+                <div>
+                  <div className="row-title">{brandName(p.brandId)} · {p.gsm}g <span className="mono-tag pl-tag">{pipelineLabelMap.get(p.batchId)}</span> <span className="mono-tag">Lot {p.lotNo}</span></div>
+                  <div className="row-sub">{supplierName(p.supplierId)} · {num(p.weight)} kg</div>
+                </div>
+                <Stamp tone="green">In Godown · {reelLabelMap.get(p.importedBatchId) || ""}</Stamp>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- reels in ---------------- */
 function ReelsAddForm({ ctx }) {
-  const { suppliers, brands, lifters, reels, persist, reelLabelMap } = ctx;
+  const { suppliers, brands, lifters, reels, pipeline, persist, reelLabelMap, pipelineLabelMap, supplierName, brandName } = ctx;
   const [supplierId, setSupplierId] = useState(suppliers[0]?.id || "");
   const [date, setDate] = useState(todayISO());
   const [lifterId, setLifterId] = useState(lifters[0]?.id || "");
   const [biltyWeight, setBiltyWeight] = useState("");
   const [loadingChargePerKg, setLoadingChargePerKg] = useState("");
-
-  const blankRow = () => ({ key: uid(), lotNo: "", brandId: brands[0]?.id || "", gsm: "", width: "", weight: "", detail: "" });
+  const blankRow = () => ({ key: uid(), lotNo: "", brandId: brands[0]?.id || "", gsm: "", width: "", weight: "", detail: "", pipelineId: null, pipelineBatchId: null });
   const [rows, setRows] = useState([blankRow()]);
   const [lastSaved, setLastSaved] = useState(null);
-
+  const [showImport, setShowImport] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [importNotice, setImportNotice] = useState("");
+  const [saving, setSaving] = useState(false);
   useEffect(() => { if (!supplierId && suppliers[0]) setSupplierId(suppliers[0].id); }, [suppliers]);
   useEffect(() => { if (!lifterId && lifters[0]) setLifterId(lifters[0].id); }, [lifters]);
+
+  const openPipeline = pipeline.filter((p) => p.status === "pipeline");
+  const pipelineBatches = useMemo(() => {
+    const map = new Map();
+    openPipeline.forEach((p) => { if (!map.has(p.batchId)) map.set(p.batchId, []); map.get(p.batchId).push(p); });
+    return [...map.entries()].map(([batchId, lots]) => ({
+      batchId, label: pipelineLabelMap.get(batchId), date: lots[0].date, supplierId: lots[0].supplierId, lots,
+      totalWeight: lots.reduce((a, l) => a + Number(l.weight), 0),
+    })).sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [pipeline, pipelineLabelMap]);
 
   const updateRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blankRow()]);
   const removeRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
   const loadingChargesTotal = (Number(biltyWeight || 0) / 1000) * Number(loadingChargePerKg || 0);
 
-  const saveAll = () => {
-    if (!supplierId || !date) return;
+  const toggleSelect = (id) => setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const selectBatch = (batchId) => {
+    const ids = openPipeline.filter((p) => p.batchId === batchId).map((p) => p.id);
+    setSelectedIds((prev) => {
+      const all = ids.every((id) => prev.includes(id));
+      return all ? prev.filter((id) => !ids.includes(id)) : [...new Set([...prev, ...ids])];
+    });
+  };
+  const selectAll = () => setSelectedIds(selectedIds.length === openPipeline.length ? [] : openPipeline.map((p) => p.id));
+
+  const addSelectedToRows = () => {
+    const existingLots = new Set(reels.map((r) => lotKey(r.lotNo)));
+    const inForm = new Set(rows.map((r) => lotKey(r.lotNo)));
+    const skipped = []; const added = [];
+    openPipeline.filter((p) => selectedIds.includes(p.id)).forEach((p) => {
+      const key = lotKey(p.lotNo);
+      if (existingLots.has(key) || inForm.has(key)) { skipped.push(String(p.lotNo)); return; }
+      inForm.add(key);
+      added.push({ key: uid(), lotNo: String(p.lotNo), brandId: p.brandId, gsm: String(p.gsm), width: String(p.width), weight: String(p.weight), detail: p.detail || "", pipelineId: p.id, pipelineBatchId: p.batchId });
+    });
+    if (added.length) setRows((prev) => [...prev, ...added]);
+    setImportNotice(added.length
+      ? `Added ${added.length} reel(s) below as editable rows.${skipped.length ? ` Skipped duplicate lot(s): ${skipped.join(", ")}.` : ""} Review them, then press “Save all reels”.`
+      : `Nothing added — lot number(s) already exist in Reels In: ${skipped.join(", ")}.`);
+    setSelectedIds([]);
+  };
+
+  const saveAll = async () => {
+    if (saving || !supplierId || !date) return;
     const valid = rows.filter((r) => r.lotNo.trim() && r.brandId && r.gsm && r.width && r.weight);
     if (valid.length === 0) return;
-    const existingLots = new Set(reels.map((r) => r.lotNo));
-    const batchId = uid();
-    const newOnes = valid.filter((r) => !existingLots.has(r.lotNo.trim())).map((r) => ({
-      id: uid(), batchId, lotNo: r.lotNo.trim(), supplierId, brandId: r.brandId, gsm: Number(r.gsm), width: Number(r.width),
-      weight: Number(r.weight), detail: r.detail.trim(), date,
-      lifterId: lifterId || null,
-      biltyWeight: Number(biltyWeight || 0), loadingChargePerKg: Number(loadingChargePerKg || 0),
-    }));
-    if (newOnes.length === 0) return;
-    persist.reels([...reels, ...newOnes]);
-    setLastSaved({ count: newOnes.length, batchId });
-    setRows([blankRow()]); setBiltyWeight(""); setLoadingChargePerKg("");
+    setSaving(true);
+    const existingLots = new Set(reels.map((r) => lotKey(r.lotNo)));
+    const seen = new Set(); const skipped = []; const savedKeys = new Set();
+    const batchId = uid(); const newOnes = []; const reelIdByPipelineId = {};
+    valid.forEach((r) => {
+      const lotNo = r.lotNo.trim(); const key = lotKey(lotNo);
+      if (existingLots.has(key) || seen.has(key)) { skipped.push(lotNo); return; }
+      seen.add(key); savedKeys.add(r.key);
+      const reelId = uid();
+      newOnes.push({
+        id: reelId, batchId, lotNo, supplierId, brandId: r.brandId, gsm: Number(r.gsm), width: Number(r.width),
+        weight: Number(r.weight), detail: r.detail.trim(), date, lifterId: lifterId || null,
+        biltyWeight: Number(biltyWeight || 0), loadingChargePerKg: Number(loadingChargePerKg || 0),
+        pipelineId: r.pipelineId || null, pipelineBatchId: r.pipelineBatchId || null,
+      });
+      if (r.pipelineId) reelIdByPipelineId[r.pipelineId] = reelId;
+    });
+    if (newOnes.length === 0) {
+      setLastSaved({ count: 0, batchId: null, skipped });
+      setSaving(false);
+      return;
+    }
+    try {
+      await persist.reels([...reels, ...newOnes]);
+      const importedIds = Object.keys(reelIdByPipelineId);
+      if (importedIds.length) {
+        await persist.pipeline(pipeline.map((p) => reelIdByPipelineId[p.id]
+          ? { ...p, status: "imported", importedReelId: reelIdByPipelineId[p.id], importedBatchId: batchId, importedAt: new Date().toISOString() }
+          : p));
+      }
+    } catch (e) { setSaving(false); return; }
+    setLastSaved({ count: newOnes.length, batchId, skipped });
+    setRows((prev) => { const left = prev.filter((r) => !savedKeys.has(r.key)); return left.length ? left : [blankRow()]; });
+    setBiltyWeight(""); setLoadingChargePerKg(""); setSaving(false);
   };
 
   const disabled = suppliers.length === 0 || brands.length === 0;
@@ -902,7 +1201,7 @@ function ReelsAddForm({ ctx }) {
     <div>
       {disabled && <EmptyRow>Add a supplier and at least one brand first.</EmptyRow>}
       {!disabled && (
-        <div className="ticket-form" style={{ maxWidth: 900 }}>
+        <div className="ticket-form" style={{ maxWidth: 940 }}>
           <div className="grid-2">
             <Field label="Supplier"><select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>{suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
             <Field label="Date received"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
@@ -920,12 +1219,50 @@ function ReelsAddForm({ ctx }) {
           {(Number(biltyWeight) > 0 || Number(loadingChargePerKg) > 0) && (
             <div className="computed">Loading charges for this entry: <b>{money(loadingChargesTotal)}</b></div>
           )}
+
+          <div className="import-bar">
+            <button type="button" className="btn import-toggle" onClick={() => setShowImport((s) => !s)}>
+              <Clock size={14} /> {showImport ? "Hide pipeline" : `Import from Pipeline (${openPipeline.length} open)`}
+            </button>
+          </div>
+          {showImport && (
+            <div className="import-panel">
+              <div className="import-panel-head">
+                <div className="import-panel-title">Pick reels from pipeline — they become editable rows below and save only when you press “Save all reels”</div>
+                <div className="row-actions">
+                  <button className="btn" onClick={selectAll}>{selectedIds.length === openPipeline.length && openPipeline.length > 0 ? "Clear all" : "Select all reels"}</button>
+                  <button className="btn primary" onClick={addSelectedToRows} disabled={selectedIds.length === 0}><Plus size={14} /> Add {selectedIds.length || ""} to entry</button>
+                </div>
+              </div>
+              {openPipeline.length === 0 && <EmptyRow>Pipeline is empty — add reels under Reels in Pipeline → Entries.</EmptyRow>}
+              {pipelineBatches.map((b) => (
+                <div className="import-batch" key={b.batchId}>
+                  <div className="import-batch-head">
+                    <span className="mono-tag pl-tag">{b.label}</span>
+                    <span>{fmtDate(b.date)} · {supplierName(b.supplierId)} · {b.lots.length} reels · {num(b.totalWeight)} kg</span>
+                    <button className="btn select-all-btn" onClick={() => selectBatch(b.batchId)}>Select all</button>
+                  </div>
+                  {b.lots.map((p) => (
+                    <label className="import-row" key={p.id}>
+                      <input type="checkbox" checked={selectedIds.includes(p.id)} onChange={() => toggleSelect(p.id)} />
+                      <span className="import-row-main"><b>{p.lotNo}</b> · {brandName(p.brandId)} · {p.gsm}g {p.width ? `· ${p.width}"` : ""} · {num(p.weight)} kg{p.detail ? ` · ${p.detail}` : ""}</span>
+                    </label>
+                  ))}
+                </div>
+              ))}
+              {importNotice && <div className="notice-warn">{importNotice}</div>}
+            </div>
+          )}
+
           <FormDivider label="Reels in this entry" />
           <div className="rows-table">
             <div className="rows-head cols-7"><span>Lot no</span><span>Brand</span><span>Gram</span><span>Width</span><span>Weight</span><span>Detail</span><span /></div>
             {rows.map((r) => (
               <div className="rows-line cols-7" key={r.key}>
-                <input value={r.lotNo} onChange={(e) => updateRow(r.key, { lotNo: e.target.value })} placeholder="e.g. 9938" />
+                <div className="lot-cell">
+                  <input value={r.lotNo} onChange={(e) => updateRow(r.key, { lotNo: e.target.value })} placeholder="e.g. 9938" />
+                  {r.pipelineId && <span className="pl-chip" title={`From ${pipelineLabelMap.get(r.pipelineBatchId)}`}>PL</span>}
+                </div>
                 <select value={r.brandId} onChange={(e) => updateRow(r.key, { brandId: e.target.value })}>{brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select>
                 <input type="number" value={r.gsm} onChange={(e) => updateRow(r.key, { gsm: e.target.value })} placeholder="230" />
                 <input type="number" value={r.width} onChange={(e) => updateRow(r.key, { width: e.target.value })} placeholder="30" />
@@ -937,9 +1274,14 @@ function ReelsAddForm({ ctx }) {
           </div>
           <div className="form-actions">
             <button className="btn" onClick={addRow}><Plus size={14} /> Add reel row</button>
-            <button className="btn primary" onClick={saveAll}>Save all reels</button>
+            <button className="btn primary" onClick={saveAll} disabled={saving}>{saving ? "Saving…" : "Save all reels"}</button>
           </div>
-          {lastSaved && <div className="computed">Saved {lastSaved.count} reel(s) under entry <b>{reelLabelMap.get(lastSaved.batchId)}</b>.</div>}
+          {lastSaved && lastSaved.count > 0 && (
+            <div className="computed">Saved {lastSaved.count} reel(s) under entry <b>{reelLabelMap.get(lastSaved.batchId)}</b> — status In Godown.{lastSaved.skipped.length ? ` Skipped duplicate lot(s): ${lastSaved.skipped.join(", ")}.` : ""}</div>
+          )}
+          {lastSaved && lastSaved.count === 0 && (
+            <div className="notice-warn">Nothing saved — duplicate lot number(s): {lastSaved.skipped.join(", ")}.</div>
+          )}
         </div>
       )}
     </div>
@@ -950,25 +1292,27 @@ function AddReelsToEntry({ ctx, batch, onDone }) {
   const { brands, reels, persist, reelLabelMap } = ctx;
   const blankRow = () => ({ key: uid(), lotNo: "", brandId: brands[0]?.id || "", gsm: "", width: "", weight: "", detail: "" });
   const [rows, setRows] = useState([blankRow()]);
-
   const updateRow = (key, patch) => setRows(rows.map((r) => r.key === key ? { ...r, ...patch } : r));
   const addRow = () => setRows([...rows, blankRow()]);
   const removeRow = (key) => setRows(rows.length > 1 ? rows.filter((r) => r.key !== key) : rows);
-
   const saveAll = () => {
     const valid = rows.filter((r) => r.lotNo.trim() && r.brandId && r.gsm && r.width && r.weight);
     if (valid.length === 0) return;
-    const existingLots = new Set(reels.map((r) => r.lotNo));
-    const newOnes = valid.filter((r) => !existingLots.has(r.lotNo.trim())).map((r) => ({
+    const existingLots = new Set(reels.map((r) => lotKey(r.lotNo)));
+    const seen = new Set();
+    const newOnes = valid.filter((r) => {
+      const key = lotKey(r.lotNo);
+      if (existingLots.has(key) || seen.has(key)) return false;
+      seen.add(key); return true;
+    }).map((r) => ({
       id: uid(), batchId: batch.batchId, lotNo: r.lotNo.trim(), supplierId: batch.supplierId, brandId: r.brandId,
       gsm: Number(r.gsm), width: Number(r.width), weight: Number(r.weight), detail: r.detail.trim(), date: batch.date,
       lifterId: batch.lifterId || null, biltyWeight: batch.biltyWeight || 0, loadingChargePerKg: batch.loadingChargePerKg || 0,
     }));
-    if (newOnes.length === 0) return;
+    if (newOnes.length === 0) { alert("Nothing saved — lot number(s) already exist."); return; }
     persist.reels([...reels, ...newOnes]);
     onDone();
   };
-
   return (
     <div className="ticket-form" style={{ margin: "8px 0" }} onClick={(e) => e.stopPropagation()}>
       <FormDivider label={`Add reels to ${reelLabelMap.get(batch.batchId)}`} />
@@ -998,7 +1342,7 @@ function AddReelsToEntry({ ctx, batch, onDone }) {
 }
 
 function ReelsEntriesTab({ ctx }) {
-  const { reels, persist, reelLabelMap, supplierName, lifterName, reelDesc, lotInfo } = ctx;
+  const { reels, pipeline, persist, reelLabelMap, pipelineLabelMap, supplierName, lifterName, reelDesc, lotInfo } = ctx;
   const [expanded, setExpanded] = useState(null);
   const canAdd = ctx.can("canAddEntries");
   const canDelete = ctx.can("canDeleteEntries");
@@ -1006,7 +1350,6 @@ function ReelsEntriesTab({ ctx }) {
   const [editBatch, setEditBatch] = useState(null);
   const [draft, setDraft] = useState({ date: "", biltyWeight: "", loadingChargePerKg: "", lifterId: "" });
   const [addingTo, setAddingTo] = useState(null);
-
   const batches = useMemo(() => {
     const map = new Map();
     reels.forEach((lot) => { if (!map.has(lot.batchId)) map.set(lot.batchId, []); map.get(lot.batchId).push(lot); });
@@ -1015,14 +1358,19 @@ function ReelsEntriesTab({ ctx }) {
       biltyWeight: Number(lots[0].biltyWeight || 0), loadingChargePerKg: Number(lots[0].loadingChargePerKg || 0),
       lifterId: lots[0].lifterId || "",
       totalWeight: lots.reduce((a, l) => a + Number(l.weight), 0),
+      fromPipeline: lots.some((l) => l.pipelineBatchId),
     })).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   }, [reels, reelLabelMap]);
-
-  const deleteEntry = (batchId) => {
+  const deleteEntry = async (batchId) => {
     const lots = reels.filter((r) => r.batchId === batchId);
     if (lots.some((l) => lotInfo[l.id].status !== "consignment" && lotInfo[l.id].status !== "held")) return;
-    if (!confirmDelete(`this entry (${lots.length} reels)`)) return;
-    persist.reels(reels.filter((r) => r.batchId !== batchId));
+    const fromPipeline = lots.filter((l) => l.pipelineId);
+    if (!confirmDelete(`this entry (${lots.length} reels)${fromPipeline.length ? ` — ${fromPipeline.length} reel(s) will return to Pipeline` : ""}`)) return;
+    await persist.reels(reels.filter((r) => r.batchId !== batchId));
+    if (fromPipeline.length) {
+      const ids = new Set(fromPipeline.map((l) => l.pipelineId));
+      await persist.pipeline(pipeline.map((p) => ids.has(p.id) ? { ...p, status: "pipeline", importedReelId: null, importedBatchId: null, importedAt: null } : p));
+    }
   };
   const startEdit = (b) => { setEditBatch(b.batchId); setDraft({ date: b.date, biltyWeight: b.biltyWeight || "", loadingChargePerKg: b.loadingChargePerKg || "", lifterId: b.lifterId || "" }); };
   const saveEntry = (batchId) => {
@@ -1030,7 +1378,6 @@ function ReelsEntriesTab({ ctx }) {
     persist.reels(reels.map((r) => r.batchId === batchId ? { ...r, date: draft.date, biltyWeight: Number(draft.biltyWeight || 0), loadingChargePerKg: Number(draft.loadingChargePerKg || 0), lifterId: draft.lifterId || null } : r));
     setEditBatch(null);
   };
-
   return (
     <div>
       <SectionHead title="Add reels received" />
@@ -1048,12 +1395,13 @@ function ReelsEntriesTab({ ctx }) {
               <div className="entry-card-title">
                 {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 <span className="mono-tag entry-tag">{b.label}</span>
+                {b.fromPipeline && <span className="mono-tag pl-tag">from Pipeline</span>}
                 {isEditing ? (
                   <span className="entry-date-edit" onClick={(e) => e.stopPropagation()}>
                     <input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} />
                     <select value={draft.lifterId} onChange={(e) => setDraft({ ...draft, lifterId: e.target.value })} style={{ width: 140 }}>
                       <option value="">No Lifter</option>
-                      {ctx.lifters.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                      {ctx.lifters.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
                     </select>
                     <input type="number" placeholder="Bilty wt" value={draft.biltyWeight} onChange={(e) => setDraft({ ...draft, biltyWeight: e.target.value })} style={{ width: 110 }} />
                     <input type="number" placeholder="Loading/kg" value={draft.loadingChargePerKg} onChange={(e) => setDraft({ ...draft, loadingChargePerKg: e.target.value })} style={{ width: 100 }} />
@@ -1061,7 +1409,7 @@ function ReelsEntriesTab({ ctx }) {
                     <button className="icon-btn" onClick={() => setEditBatch(null)}><X size={14} /></button>
                   </span>
                 ) : (
-                  <span>{fmtDate(b.date)} · {supplierName(b.supplierId)} · {lifterName(b.lifterId) ? `Lifter: ${lifterName(b.lifterId)} · ` : ""}{b.lots.length} reels · {num(b.totalWeight)} kg{loadingChargesTotal > 0 ? ` · loading ${money(loadingChargesTotal)}` : ""}</span>
+                  <span>{fmtDate(b.date)} · {supplierName(b.supplierId)} · {lifterName(b.lifterId) ? `Lifter: ${lifterName(b.lifterId)} ·` : ""}{b.lots.length} reels · {num(b.totalWeight)} kg{loadingChargesTotal > 0 ? `· loading ${money(loadingChargesTotal)}` : ""}</span>
                 )}
               </div>
               {!isEditing && (
@@ -1074,16 +1422,14 @@ function ReelsEntriesTab({ ctx }) {
             </div>
             {isOpen && (
               <div className="entry-card-body">
-                {addingTo === b.batchId && (
-                  <AddReelsToEntry ctx={ctx} batch={b} onDone={() => setAddingTo(null)} />
-                )}
+                {addingTo === b.batchId && <AddReelsToEntry ctx={ctx} batch={b} onDone={() => setAddingTo(null)} />}
                 {b.lots.map((lot) => {
                   const info = lotInfo[lot.id];
                   return (
                     <div className="row" key={lot.id}>
                       <div>
-                        <div className="row-title">{reelDesc(lot)} <span className="mono-tag">Lot {lot.lotNo}</span></div>
-                        <div className="row-sub">width {lot.width} · {num(lot.weight)} kg · remaining {num(info.remaining)} kg{lot.detail ? ` · ${lot.detail}` : ""}</div>
+                        <div className="row-title">{reelDesc(lot)} <span className="mono-tag">Lot {lot.lotNo}</span>{lot.pipelineBatchId && <span className="mono-tag pl-chip-inline">from {pipelineLabelMap.get(lot.pipelineBatchId)}</span>}</div>
+                        <div className="row-sub">width {lot.width} · {num(lot.weight)} kg · remaining {num(info.remaining)} kg{lot.detail ? `· ${lot.detail}` : ""}</div>
                       </div>
                       <Stamp tone={statusTone(info.status)}>{statusLabel(info.status)}</Stamp>
                     </div>
@@ -1101,24 +1447,33 @@ function ReelsEntriesTab({ ctx }) {
 function ReelsEditTab({ ctx }) {
   const canEdit = ctx.can("canEditEntries"); const canDelete = ctx.can("canDeleteEntries");
   if (!canEdit && !canDelete) return <LockedNote text="No permission." />;
-  const { reels, brands, lifters, persist, supplierName, lifterName, reelDesc, lotInfo, reelLabelMap } = ctx;
+  const { reels, pipeline, brands, lifters, persist, supplierName, lifterName, reelDesc, lotInfo, reelLabelMap } = ctx;
   const [q, setQ] = useState("");
   const [editId, setEditId] = useState(null); const [ef, setEf] = useState(null);
   const [addingToBatch, setAddingToBatch] = useState(null);
   const [newRow, setNewRow] = useState({ lotNo: "", brandId: "", gsm: "", width: "", weight: "", detail: "" });
-
   const startEdit = (lot) => { setEditId(lot.id); setEf({ lotNo: lot.lotNo, supplierId: lot.supplierId, brandId: lot.brandId, gsm: lot.gsm, width: lot.width || "", weight: lot.weight, detail: lot.detail || "", date: lot.date, lifterId: lot.lifterId || "" }); };
   const saveEdit = () => {
-    persist.reels(reels.map((r) => r.id === editId ? { ...r, lotNo: ef.lotNo.trim(), supplierId: ef.supplierId, brandId: ef.brandId, gsm: Number(ef.gsm), width: Number(ef.width), weight: Number(ef.weight), detail: ef.detail.trim(), date: ef.date, lifterId: ef.lifterId || null } : r));
+    const lotNo = ef.lotNo.trim();
+    const dup = reels.some((r) => r.id !== editId && lotKey(r.lotNo) === lotKey(lotNo));
+    if (dup) { alert("Lot number already exists on another reel."); return; }
+    persist.reels(reels.map((r) => r.id === editId ? { ...r, lotNo, supplierId: ef.supplierId, brandId: ef.brandId, gsm: Number(ef.gsm), width: Number(ef.width), weight: Number(ef.weight), detail: ef.detail.trim(), date: ef.date, lifterId: ef.lifterId || null } : r));
     setEditId(null);
   };
-  const removeLot = (id) => { if (lotInfo[id]?.status !== "consignment" && lotInfo[id]?.status !== "held") return; if (!confirmDelete("this reel")) return; persist.reels(reels.filter((r) => r.id !== id)); };
-
+  const removeLot = async (id) => {
+    if (lotInfo[id]?.status !== "consignment" && lotInfo[id]?.status !== "held") return;
+    const lot = reels.find((r) => r.id === id);
+    if (!confirmDelete("this reel" + (lot && lot.pipelineId ? " — it will return to Pipeline" : ""))) return;
+    await persist.reels(reels.filter((r) => r.id !== id));
+    if (lot && lot.pipelineId) {
+      await persist.pipeline(pipeline.map((p) => p.id === lot.pipelineId ? { ...p, status: "pipeline", importedReelId: null, importedBatchId: null, importedAt: null } : p));
+    }
+  };
   const addReelToBatch = (batchId) => {
     if (!newRow.lotNo.trim() || !newRow.brandId || !newRow.gsm || !newRow.width || !newRow.weight) return;
-    const existingLots = new Set(reels.map((r) => r.lotNo));
-    if (existingLots.has(newRow.lotNo.trim())) { alert("Lot number already exists!"); return; }
-    const batchReel = reels.find(r => r.batchId === batchId);
+    const existingLots = new Set(reels.map((r) => lotKey(r.lotNo)));
+    if (existingLots.has(lotKey(newRow.lotNo))) { alert("Lot number already exists!"); return; }
+    const batchReel = reels.find((r) => r.batchId === batchId);
     if (!batchReel) return;
     const newReel = {
       id: uid(), batchId, lotNo: newRow.lotNo.trim(), supplierId: batchReel.supplierId, brandId: newRow.brandId,
@@ -1130,7 +1485,6 @@ function ReelsEditTab({ ctx }) {
     setNewRow({ lotNo: "", brandId: brands[0]?.id || "", gsm: "", width: "", weight: "", detail: "" });
     setAddingToBatch(null);
   };
-
   const filtered = reels.filter((lot) => {
     if (!q.trim()) return true;
     const query = q.trim().toLowerCase();
@@ -1146,7 +1500,7 @@ function ReelsEditTab({ ctx }) {
       {groups.map(([d, lots]) => (
         <div key={d} className="date-block">
           <div className="date-block-head">{fmtDate(d)}</div>
-          <div className="list">
+          <div className="list panel-list">
             {lots.map((lot) => {
               const info = lotInfo[lot.id];
               const isAddingHere = addingToBatch === lot.batchId;
@@ -1160,7 +1514,7 @@ function ReelsEditTab({ ctx }) {
                         <input type="number" value={ef.gsm} onChange={(e) => setEf({ ...ef, gsm: e.target.value })} />
                         <input type="number" value={ef.width} onChange={(e) => setEf({ ...ef, width: e.target.value })} />
                         <input type="number" value={ef.weight} onChange={(e) => setEf({ ...ef, weight: e.target.value })} />
-                        <select value={ef.lifterId} onChange={(e) => setEf({ ...ef, lifterId: e.target.value })}><option value="">No Lifter</option>{lifters.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
+                        <select value={ef.lifterId} onChange={(e) => setEf({ ...ef, lifterId: e.target.value })}><option value="">No Lifter</option>{lifters.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</select>
                         <input value={ef.detail} onChange={(e) => setEf({ ...ef, detail: e.target.value })} />
                         <input type="date" value={ef.date} onChange={(e) => setEf({ ...ef, date: e.target.value })} />
                         <button className="icon-btn" onClick={saveEdit}><Check size={15} /></button>
@@ -1169,7 +1523,7 @@ function ReelsEditTab({ ctx }) {
                     ) : (
                       <>
                         <div>
-                          <div className="row-title">{reelDesc(lot)} <span className="mono-tag">{reelLabelMap.get(lot.batchId)}</span> <span className="mono-tag">Lot {lot.lotNo}</span></div>
+                          <div className="row-title">{reelDesc(lot)} <span className="mono-tag entry-tag">{reelLabelMap.get(lot.batchId)}</span> <span className="mono-tag">Lot {lot.lotNo}</span></div>
                           <div className="row-sub">{supplierName(lot.supplierId)} · {num(lot.weight)} kg · Lifter: {lifterName(lot.lifterId)}</div>
                         </div>
                         <div className="row-actions">
@@ -1221,14 +1575,12 @@ function ReelsReportView({ ctx }) {
   const [from, setFrom] = useState(""); const [to, setTo] = useState("");
   const [sort, setSort] = useState({ field: "entry", dir: "desc" });
   const [expandedId, setExpandedId] = useState(null);
-
   const statusOptions = [
     { value: "consignment", label: "In godown" }, { value: "partial", label: "Partly converted" },
     { value: "converted", label: "Fully converted" }, { value: "purchased", label: "Purchased" },
-    { value: "held", label: "On Hold" }
+    { value: "held", label: "On Hold" },
   ];
   const supplierOptions = suppliers.map((s) => ({ value: s.id, label: s.name }));
-
   const filtered = reels.filter((lot) => {
     if (supplierFilter.length && !supplierFilter.includes(lot.supplierId)) return false;
     if (statusFilter.length && !statusFilter.includes(lotInfo[lot.id].status)) return false;
@@ -1242,7 +1594,6 @@ function ReelsReportView({ ctx }) {
     }
     return true;
   });
-
   const groups = groupByDate(filtered);
   const getters = { weight: (l) => Number(l.weight), remaining: (l) => lotInfo[l.id].remaining };
   const loadingChargesFor = (lots) => {
@@ -1253,7 +1604,6 @@ function ReelsReportView({ ctx }) {
   const grandLoadingCharges = loadingChargesFor(filtered);
   const grandWeightOnScreen = filtered.reduce((a, l) => a + Number(l.weight), 0);
   const grandRemainingOnScreen = filtered.reduce((a, l) => a + lotInfo[l.id].remaining, 0);
-
   const doPrint = () => {
     let html = "";
     groups.forEach(([d, lots]) => {
@@ -1271,7 +1621,6 @@ function ReelsReportView({ ctx }) {
     html += `<h2>Grand total — ${filtered.length} reel(s)</h2><table><tbody><tr><td>Total weight</td><td>${num(grandWeightOnScreen)} kg</td></tr><tr><td>Total remaining</td><td>${num(grandRemainingOnScreen)} kg</td></tr>${grandLoadingCharges > 0 ? `<tr><td>Loading charges</td><td>${money(grandLoadingCharges)}</td></tr>` : ""}</tbody></table>`;
     printHTML("Reels in report", html || "<p>No entries.</p>");
   };
-
   return (
     <div>
       <SectionHead title="Reels in — full report" onPrint={doPrint} />
@@ -1289,7 +1638,7 @@ function ReelsReportView({ ctx }) {
         const dateCharges = loadingChargesFor(lots);
         return (
           <div key={d} className="date-block">
-            <div className="date-block-head">{fmtDate(d)} <span>{lots.length} reels{dateCharges > 0 ? ` · loading ${money(dateCharges)}` : ""}</span></div>
+            <div className="date-block-head">{fmtDate(d)} <span>{lots.length} reels{dateCharges > 0 ? `· loading ${money(dateCharges)}` : ""}</span></div>
             <table className="ledger-table">
               <thead><tr><th /><th>Entry</th><th>Item</th><th>Lot</th><th>Width</th><th>Supplier</th><th>Lifter</th><th>Status</th><th>Recv</th><th>Rem</th></tr></thead>
               <tbody>
@@ -1321,7 +1670,7 @@ function ReelsReportView({ ctx }) {
                               </div>
                             ))}
                             {info.purchase && <div className="detail-line">Purchase {purchaseLabelMap.get(info.purchase.batchId)}: {num(info.purchase.weight)} kg at {num(info.purchase.rate)}/kg</div>}
-                            {info.status === "held" && <div className="detail-line" style={{ color: 'var(--danger)' }}>Currently ON HOLD.</div>}
+                            {info.status === "held" && <div className="detail-line" style={{ color: "var(--red)" }}>Currently ON HOLD.</div>}
                           </div>
                         </td></tr>
                       )}
@@ -1346,22 +1695,18 @@ function ReelsReportView({ ctx }) {
   );
 }
 
+/* ---------------- hold ---------------- */
 function HoldEntriesTab({ ctx }) {
   const { reels, lotInfo, reelDesc, persist, lifterName, customers, customerName } = ctx;
   const [selectedIds, setSelectedIds] = useState([]);
   const [holdNote, setHoldNote] = useState("");
   const [heldByCustomerId, setHeldByCustomerId] = useState("");
   const [q, setQ] = useState("");
-
   const available = reels.filter((r) =>
     lotInfo[r.id]?.available && !r.isHeld &&
     (!q.trim() || `${r.lotNo} ${reelDesc(r)} ${lifterName(r.lifterId)}`.toLowerCase().includes(q.toLowerCase()))
   );
-
-  const toggleSelect = (id) => {
-    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  };
-
+  const toggleSelect = (id) => setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   const applyHold = async () => {
     if (selectedIds.length === 0) return;
     if (!window.confirm(`Hold ${selectedIds.length} reel(s)?`)) return;
@@ -1371,25 +1716,18 @@ function HoldEntriesTab({ ctx }) {
         : r
     );
     await persist.reels(updated);
-    setSelectedIds([]);
-    setHoldNote("");
-    setHeldByCustomerId("");
+    setSelectedIds([]); setHoldNote(""); setHeldByCustomerId("");
   };
-
   const releaseHold = async (id) => {
     if (!window.confirm("Release this reel back to available stock?")) return;
-    const updated = reels.map(r =>
-      r.id === id ? { ...r, isHeld: false, heldDate: null, holdNote: null, heldByCustomerId: null } : r
-    );
+    const updated = reels.map(r => r.id === id ? { ...r, isHeld: false, heldDate: null, holdNote: null, heldByCustomerId: null } : r);
     await persist.reels(updated);
   };
-
   const heldReels = reels.filter(r => r.isHeld);
-
   return (
     <div>
       <SectionHead title="Hold / Release Reels" />
-      <div className="ticket-form" style={{ maxWidth: 900 }}>
+      <div className="ticket-form" style={{ maxWidth: 940 }}>
         <h3 className="sub-heading" style={{ marginTop: 0 }}>Place Reels on Hold</h3>
         <Field label="Search available reels">
           <div className="search-input"><Search size={13} /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Lot no or description..." /></div>
@@ -1403,10 +1741,10 @@ function HoldEntriesTab({ ctx }) {
         <Field label="Reason / Note (optional)">
           <input value={holdNote} onChange={(e) => setHoldNote(e.target.value)} placeholder="e.g. Quality check, reserved for special order" />
         </Field>
-        <div className="list" style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 6, padding: 8 }}>
+        <div className="list pick-list">
           {available.length === 0 && <EmptyRow>No available reels match search.</EmptyRow>}
           {available.map((r) => (
-            <label key={r.id} className="checkbox-field" style={{ padding: '6px 4px', borderBottom: '1px solid var(--line)' }}>
+            <label key={r.id} className="checkbox-field pick-row">
               <input type="checkbox" checked={selectedIds.includes(r.id)} onChange={() => toggleSelect(r.id)} />
               <span>
                 <b>{r.lotNo}</b> — {reelDesc(r)} — {num(lotInfo[r.id].remaining)} kg
@@ -1422,7 +1760,7 @@ function HoldEntriesTab({ ctx }) {
       </div>
       <h3 className="sub-heading">Currently Held Reels ({heldReels.length})</h3>
       {heldReels.length === 0 && <EmptyRow>No reels currently on hold.</EmptyRow>}
-      <div className="list">
+      <div className="list panel-list">
         {heldReels.map((r) => (
           <div className="row" key={r.id}>
             <div>
@@ -1441,7 +1779,6 @@ function HoldEntriesTab({ ctx }) {
     </div>
   );
 }
-
 function HoldReportView({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="No permission." />;
   const { reels, lotInfo, reelDesc, supplierName, lifterName, customerName } = ctx;
@@ -1450,7 +1787,7 @@ function HoldReportView({ ctx }) {
   const doPrint = () => {
     let html = `<table><thead><tr><th>Lot</th><th>Description</th><th>Supplier</th><th>Lifter</th><th>Held By</th><th>Held Date</th><th>Note</th><th>Remaining</th></tr></thead><tbody>`;
     held.forEach(r => {
-      html += `<tr><td>${esc(r.lotNo)}</td><td>${esc(reelDesc(r))}</td><td>${esc(supplierName(r.supplierId))}</td><td>${esc(lifterName(r.lifterId))}</td><td>${esc(customerName(r.heldByCustomerId))}</td><td>${esc(fmtDate(r.heldDate))}</td><td>${esc(r.holdNote || '—')}</td><td>${num(lotInfo[r.id].remaining)}</td></tr>`;
+      html += `<tr><td>${esc(r.lotNo)}</td><td>${esc(reelDesc(r))}</td><td>${esc(supplierName(r.supplierId))}</td><td>${esc(lifterName(r.lifterId))}</td><td>${esc(customerName(r.heldByCustomerId))}</td><td>${esc(fmtDate(r.heldDate))}</td><td>${esc(r.holdNote || "—")}</td><td>${num(lotInfo[r.id].remaining)}</td></tr>`;
     });
     html += `</tbody><tfoot><tr><td colspan="7">${held.length} reel(s)</td><td>${num(totalWeight)}</td></tr></tfoot></table>`;
     printHTML("Held Reels Report", html);
@@ -1474,6 +1811,7 @@ function HoldReportView({ ctx }) {
   );
 }
 
+/* ---------------- purchases ---------------- */
 function PurchasesAddForm({ ctx }) {
   const { reels, purchases, customers, persist, reelDesc, lotInfo, purchaseLabelMap } = ctx;
   const [date, setDate] = useState(todayISO());
@@ -1490,9 +1828,9 @@ function PurchasesAddForm({ ctx }) {
     if (valid.length === 0 || !date) return;
     const batchId = uid();
     const newOnes = valid.map((r) => ({ id: uid(), batchId, lotId: r.lotId, weight: lotInfo[r.lotId].remaining, rate: Number(r.rate), customerId: r.customerId || null, date }));
-    const heldIds = new Set(valid.filter(r => reels.find(x => x.id === r.lotId)?.isHeld).map(r => r.lotId));
+    const heldIds = new Set(valid.filter((r) => reels.find((x) => x.id === r.lotId)?.isHeld).map((r) => r.lotId));
     if (heldIds.size > 0) {
-      const updatedReels = reels.map(r => heldIds.has(r.id) ? { ...r, isHeld: false, heldDate: null, holdNote: null, heldByCustomerId: null } : r);
+      const updatedReels = reels.map((r) => heldIds.has(r.id) ? { ...r, isHeld: false, heldDate: null, holdNote: null, heldByCustomerId: null } : r);
       persist.reels(updatedReels);
     }
     persist.purchases([...purchases, ...newOnes]);
@@ -1503,7 +1841,7 @@ function PurchasesAddForm({ ctx }) {
     <div>
       {eligible.length === 0 && rows.every((r) => !r.lotId) && <EmptyRow>No reels available to purchase right now.</EmptyRow>}
       {customers.length === 0 && <EmptyRow>No customers on file yet.</EmptyRow>}
-      <div className="ticket-form" style={{ maxWidth: 900 }}>
+      <div className="ticket-form" style={{ maxWidth: 940 }}>
         <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
         <FormDivider label="Purchase lines" />
         <div className="rows-table">
@@ -1535,7 +1873,6 @@ function PurchasesAddForm({ ctx }) {
     </div>
   );
 }
-
 function PurchasesEntriesTab({ ctx }) {
   const { reels, purchases, persist, purchaseLabelMap, reelDesc } = ctx;
   const [expanded, setExpanded] = useState(null);
@@ -1590,8 +1927,10 @@ function PurchasesEntriesTab({ ctx }) {
                   const lot = reels.find((r) => r.id === p.lotId);
                   return (
                     <div className="row" key={p.id}>
-                      <div className="row-title">{lot ? reelDesc(lot) : "removed"} <span className="mono-tag">Lot {lot?.lotNo}</span></div>
-                      <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{ctx.purchasedByLabel(p) ? ` · ${ctx.purchasedByLabel(p)}` : ""}</div>
+                      <div>
+                        <div className="row-title">{lot ? reelDesc(lot) : "removed"} <span className="mono-tag">Lot {lot?.lotNo}</span></div>
+                        <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{ctx.purchasedByLabel(p) ? `· ${ctx.purchasedByLabel(p)}` : ""}</div>
+                      </div>
                     </div>
                   );
                 })}
@@ -1603,7 +1942,6 @@ function PurchasesEntriesTab({ ctx }) {
     </div>
   );
 }
-
 function PurchaseReportView({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="No permission." />;
   const { reels, purchases, reelDesc, purchaseLabelMap, purchasedByLabel } = ctx;
@@ -1676,7 +2014,6 @@ function PurchaseReportView({ ctx }) {
     </div>
   );
 }
-
 function PurchaseEditTab({ ctx }) {
   const canEdit = ctx.can("canEditEntries"); const canDelete = ctx.can("canDeleteEntries");
   if (!canEdit && !canDelete) return <LockedNote text="No permission." />;
@@ -1707,7 +2044,7 @@ function PurchaseEditTab({ ctx }) {
       {groups.map(([d, lines]) => (
         <div key={d} className="date-block">
           <div className="date-block-head">{fmtDate(d)}</div>
-          <div className="list">
+          <div className="list panel-list">
             {lines.map((p) => {
               const lot = reels.find((r) => r.id === p.lotId);
               return (
@@ -1724,8 +2061,8 @@ function PurchaseEditTab({ ctx }) {
                   ) : lot ? (
                     <>
                       <div>
-                        <div className="row-title">{reelDesc(lot)} <span className="mono-tag">{purchaseLabelMap.get(p.batchId)}</span> <span className="mono-tag">Lot {lot.lotNo}</span></div>
-                        <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{purchasedByLabel(p) ? ` · ${purchasedByLabel(p)}` : ""}</div>
+                        <div className="row-title">{reelDesc(lot)} <span className="mono-tag entry-tag">{purchaseLabelMap.get(p.batchId)}</span> <span className="mono-tag">Lot {lot.lotNo}</span></div>
+                        <div className="row-sub">{num(p.weight)} kg at {num(p.rate)}/kg = {money(Number(p.weight) * Number(p.rate))}{purchasedByLabel(p) ? `· ${purchasedByLabel(p)}` : ""}</div>
                       </div>
                       <div className="row-actions">
                         {canEdit && <button className="icon-btn" onClick={() => startEdit(p)}><Pencil size={15} /></button>}
@@ -1743,6 +2080,7 @@ function PurchaseEditTab({ ctx }) {
   );
 }
 
+/* ---------------- production ---------------- */
 function ProductionAddForm({ ctx }) {
   const { reels, sizes, productions, productionItems, persist, reelDesc, sizeLabel, packetWeightKg, lotInfo, productionLabelMap } = ctx;
   const [date, setDate] = useState(todayISO());
@@ -1773,7 +2111,7 @@ function ProductionAddForm({ ctx }) {
     const productionId = uid();
     try {
       if (lot.isHeld) {
-        const updatedReels = reels.map(r => r.id === lotId ? { ...r, isHeld: false, heldDate: null, holdNote: null, heldByCustomerId: null } : r);
+        const updatedReels = reels.map((r) => r.id === lotId ? { ...r, isHeld: false, heldDate: null, holdNote: null, heldByCustomerId: null } : r);
         await persist.reels(updatedReels);
       }
       await persist.productions([...productions, { id: productionId, lotId, wastageKg: Number(wastageKg || 0), closeOut, date }]);
@@ -1788,7 +2126,7 @@ function ProductionAddForm({ ctx }) {
     <div>
       {disabled && <EmptyRow>Add at least one packet size first.</EmptyRow>}
       {!disabled && (
-        <div className="ticket-form" style={{ maxWidth: 900 }}>
+        <div className="ticket-form" style={{ maxWidth: 940 }}>
           <div className="grid-2">
             <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
             <Field label="Reel"><LotPicker rowKey="prod-lot" lots={eligible} value={lotId} onChange={setLotId} labelFn={labelFn} /></Field>
@@ -1822,7 +2160,6 @@ function ProductionAddForm({ ctx }) {
     </div>
   );
 }
-
 function ProductionEntriesTab({ ctx }) {
   const { reels, sizes, productions, persist, reelDesc, sizeLabel, packetWeightKg, itemsFor, itemsWeightFor, productionLabelMap, lotInfo } = ctx;
   const [expanded, setExpanded] = useState(null);
@@ -1882,7 +2219,6 @@ function ProductionEntriesTab({ ctx }) {
     </div>
   );
 }
-
 function ProductionReportView({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="No permission." />;
   const { reels, sizes, productions, reelDesc, sizeLabel, packetWeightKg, avgGramForLot, lotInfo, itemsFor, itemsWeightFor, productionLabelMap, remainingAfterProduction } = ctx;
@@ -1982,7 +2318,6 @@ function ProductionReportView({ ctx }) {
     </div>
   );
 }
-
 function ProductionEditTab({ ctx }) {
   const canEdit = ctx.can("canEditEntries"); const canDelete = ctx.can("canDeleteEntries");
   if (!canEdit && !canDelete) return <LockedNote text="No permission." />;
@@ -2060,15 +2395,17 @@ function ProductionEditTab({ ctx }) {
   );
 }
 
+/* ---------------- stock ---------------- */
 function StockReportTab({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="No permission." />;
-  const { reels, suppliers, lotInfo, reelDesc, supplierName, purchasedByLabel, lifterName } = ctx;
+  const { suppliers, lotInfo, reelDesc, supplierName, purchasedByLabel, lifterName } = ctx;
+  const reels = ctx.allStockLots || ctx.reels;
   const [supplierFilter, setSupplierFilter] = useState([]);
   const [statusFilter, setStatusFilter] = useState([]);
   const [q, setQ] = useState("");
   const [from, setFrom] = useState(""); const [to, setTo] = useState("");
   const [sort, setSort] = useState({ field: "date", dir: "desc" });
-  const statusOptions = [{ value: "consignment", label: "In godown" }, { value: "partial", label: "Partly converted" }, { value: "converted", label: "Fully converted" }, { value: "purchased", label: "Purchased" }, { value: "held", label: "On Hold" }];
+  const statusOptions = [{ value: "consignment", label: "In godown" }, { value: "partial", label: "Partly converted" }, { value: "converted", label: "Fully converted" }, { value: "purchased", label: "Purchased" }, { value: "held", label: "On Hold" }, { value: "pipeline", label: "In Pipeline" }];
   const supplierOptions = suppliers.map((s) => ({ value: s.id, label: s.name }));
   const rows = reels.filter((lot) => {
     if (supplierFilter.length && !supplierFilter.includes(lot.supplierId)) return false;
@@ -2135,16 +2472,16 @@ function StockReportTab({ ctx }) {
     </div>
   );
 }
-
 function ReelsQuantityTab({ ctx }) {
   if (!ctx.can("canViewReports")) return <LockedNote text="No permission." />;
-  const { reels, suppliers, lotInfo, reelDesc, supplierName } = ctx;
+  const { suppliers, lotInfo, reelDesc } = ctx;
+  const reels = ctx.allStockLots || ctx.reels;
   const [supplierFilter, setSupplierFilter] = useState([]);
   const [statusFilter, setStatusFilter] = useState([]);
   const [q, setQ] = useState("");
   const [from, setFrom] = useState(""); const [to, setTo] = useState("");
   const [sort, setSort] = useState({ field: "qty", dir: "desc" });
-  const statusOptions = [{ value: "consignment", label: "In godown" }, { value: "partial", label: "Partly converted" }, { value: "converted", label: "Fully converted" }, { value: "purchased", label: "Purchased" }, { value: "held", label: "On Hold" }];
+  const statusOptions = [{ value: "consignment", label: "In godown" }, { value: "partial", label: "Partly converted" }, { value: "converted", label: "Fully converted" }, { value: "purchased", label: "Purchased" }, { value: "held", label: "On Hold" }, { value: "pipeline", label: "In Pipeline" }];
   const supplierOptions = suppliers.map((s) => ({ value: s.id, label: s.name }));
   const rows = reels.filter((lot) => {
     if (supplierFilter.length && !supplierFilter.includes(lot.supplierId)) return false;
@@ -2213,512 +2550,305 @@ function ReelsQuantityTab({ ctx }) {
   );
 }
 
-/* ---------------- styles ---------------- */
+function TeamTab() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState(null);
+  const [err, setErr] = useState("");
+  const permKeys = [
+    { key: "canAddEntries", label: "Add" }, { key: "canEditEntries", label: "Edit" },
+    { key: "canDeleteEntries", label: "Delete" }, { key: "canManageMasters", label: "Masters" },
+    { key: "canViewReports", label: "Reports" },
+  ];
+  const load = async () => {
+    setLoading(true); setErr("");
+    try { setRows(await sbList("profiles", "?select=*&order=created_at.asc")); }
+    catch (e) { setErr(e.message); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+  const update = (id, patch) => setRows(rows.map((r) => r.id === id ? { ...r, ...patch } : r));
+  const save = async (row) => {
+    setSavingId(row.id);
+    try {
+      await sbUpdate("profiles", row.id, {
+        role: row.role, canAddEntries: row.canAddEntries, canEditEntries: row.canEditEntries,
+        canDeleteEntries: row.canDeleteEntries, canManageMasters: row.canManageMasters, canViewReports: row.canViewReports,
+      });
+    } catch (e) { alert("Save failed: " + e.message); }
+    setSavingId(null);
+  };
+  return (
+    <div>
+      <SectionHead title="Team &amp; access" />
+      <div className="computed" style={{ marginBottom: 14 }}>Names are whatever was given at signup. Reports access is required for almost everything else.</div>
+      {loading && <EmptyRow>Loading team…</EmptyRow>}
+      {err && <LockedNote text={err} />}
+      {!loading && rows.length === 0 && <EmptyRow>No accounts yet.</EmptyRow>}
+      {!loading && rows.map((r) => (
+        <div key={r.id} className="team-row">
+          <div className="team-row-name">{r.fullName || "—"}</div>
+          <select value={r.role} onChange={(e) => update(r.id, { role: e.target.value })}>
+            <option value="employee">Employee</option>
+            <option value="admin">Admin</option>
+          </select>
+          {permKeys.map((p) => (
+            <label key={p.key} className="checkbox-field team-perm">
+              <input type="checkbox" checked={!!r[p.key]} disabled={r.role === "admin"} onChange={(e) => update(r.id, { [p.key]: e.target.checked })} />
+              <span>{p.label}</span>
+            </label>
+          ))}
+          <button className="btn" onClick={() => save(r)} disabled={savingId === r.id}>{savingId === r.id ? "Saving…" : "Save"}</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- horizon light styles ---------------- */
 function Style() {
   return (
     <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap');
-
-      *, *::before, *::after { box-sizing: border-box; }
-
-      :root {
-        /* NEW SLATE & TEAL PALETTE */
-        --ink: #1E293B;
-        --paper: #F8FAFC;
-        --paper-2: #FFFFFF;
-        --line: #E2E8F0;
-        --accent: #0F766E;       /* Teal 700 */
-        --accent-light: #CCFBF1; /* Teal 100 */
-        --accent-hover: #0D9488; /* Teal 600 */
-        --danger: #DC2626;
-        --danger-bg: #FEF2F2;
-        --warn: #D97706;
-        --warn-bg: #FFFBEB;
-        --info: #2563EB;
-        --info-bg: #EFF6FF;
-        --gray-bg: #F1F5F9;
-        --muted: #64748B;
-      }
-
-      html, body, #root {
-        height: 100% !important;
-        min-height: 100% !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        width: 100% !important;
-        text-align: left !important;
-        background: var(--paper) !important;
-        color: var(--ink) !important;
-        font-family: 'Inter', sans-serif !important;
-      }
-
-      /* =========================
-         APP SHELL & LAYOUT
-         ========================= */
-      .app-shell {
-        font-family: 'Inter', sans-serif;
-        color: var(--ink);
-        background: var(--paper);
-        min-height: 100vh;
-      }
-
-      .loading-shell {
-        display: flex; align-items: center; gap: 10px;
-        justify-content: center; padding: 48px 0; color: var(--muted);
-      }
-
-      .spin { animation: spin 1s linear infinite; }
-      @keyframes spin { to { transform: rotate(360deg); } }
-
-      .app-layout { display: flex; min-height: 100vh; }
-      .main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-      .top-bar {
-        padding: 16px 28px; border-bottom: 1px solid var(--line);
-        background: var(--paper-2);
-      }
-      .top-bar h1 {
-        font-family: 'Inter', sans-serif; font-weight: 700;
-        font-size: 18px; text-transform: uppercase; margin: 0;
-        letter-spacing: .03em; color: var(--ink);
-      }
-      .app-main { padding: 24px 28px 32px; flex: 1; overflow-y: auto; }
-
-      /* =========================
-         SIDEBAR (SLATE THEME)
-         ========================= */
-      .sidebar {
-        width: 260px; background: var(--ink);
-        border-right: none;
-        display: flex; flex-direction: column;
-        transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-        flex-shrink: 0; overflow: hidden;
-      }
-      .sidebar.collapsed { width: 64px; }
-
-      .sidebar-brand {
-        display: flex; align-items: center; gap: 12px;
-        padding: 20px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);
-        min-height: 72px;
-      }
-      .sidebar-brand-mark {
-        font-family: 'JetBrains Mono', monospace; font-weight: 700;
-        font-size: 18px; background: var(--accent); color: #fff;
-        width: 36px; height: 36px; display: flex; align-items: center;
-        justify-content: center; border-radius: 8px; flex-shrink: 0;
-      }
-      .sidebar-brand-title {
-        font-weight: 700; font-size: 14px; text-transform: uppercase;
-        line-height: 1.15; color: #fff;
-      }
-      .sidebar-brand-sub {
-        font-size: 10px; color: rgba(255,255,255,0.45); margin-top: 2px;
-      }
-
-      .sidebar-nav {
-        flex: 1; overflow-y: auto; overflow-x: hidden;
-        padding: 12px 10px; display: flex; flex-direction: column; gap: 2px;
-      }
-      .sidebar-nav::-webkit-scrollbar { width: 4px; }
-      .sidebar-nav::-webkit-scrollbar-track { background: transparent; }
-      .sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
-
-      .sidebar-link {
-        display: flex; align-items: center; gap: 12px;
-        padding: 10px 12px; border-radius: 8px; border: none;
-        background: transparent; color: rgba(255,255,255,0.6);
-        font-size: 13px; font-weight: 500; cursor: pointer;
-        white-space: nowrap; transition: all 0.15s ease;
-        width: 100%; text-align: left;
-      }
-      .sidebar-link svg { flex-shrink: 0; opacity: 0.6; transition: opacity 0.15s ease; }
-      .sidebar-link:hover { background: rgba(255,255,255,0.08); color: #fff; }
-      .sidebar-link:hover svg { opacity: 1; }
-
-      .sidebar-link.active {
-        background: var(--accent); color: #fff; font-weight: 600;
-        box-shadow: 0 2px 8px rgba(15, 118, 110, 0.3);
-      }
-      .sidebar-link.active svg { opacity: 1; color: #fff; }
-
-      .sidebar-group-head { margin-top: 6px; }
-      .sidebar-group-head.active-group {
-        color: #fff; font-weight: 600; background: rgba(255,255,255,0.06);
-      }
-      .sidebar-chevron { margin-left: auto; opacity: 0.35; transition: all 0.15s ease; }
-      .sidebar-group-head:hover .sidebar-chevron { opacity: 0.7; }
-
-      .sidebar-children {
-        display: none; flex-direction: column; gap: 1px;
-        padding: 4px 0 4px 8px; margin-left: 12px;
-        border-left: 2px solid rgba(255,255,255,0.1);
-      }
-      .sidebar-children.open { display: flex; }
-      .sidebar-sublink {
-        padding: 8px 12px; border-radius: 6px; border: none;
-        background: transparent; color: rgba(255,255,255,0.5);
-        font-size: 12.5px; font-weight: 450; cursor: pointer;
-        text-align: left; white-space: nowrap;
-        transition: all 0.15s ease; width: 100%; position: relative;
-      }
-      .sidebar-sublink:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.9); padding-left: 16px; }
-      .sidebar-sublink.active {
-        background: rgba(15, 118, 110, 0.25); color: var(--accent-light);
-        font-weight: 600; padding-left: 16px;
-      }
-      .sidebar-sublink.active::before {
-        content: ''; position: absolute; left: -10px; top: 50%;
-        transform: translateY(-50%); width: 2px; height: 16px;
-        background: var(--accent); border-radius: 0 2px 2px 0;
-      }
-
-      .sidebar-footer {
-        padding: 12px 10px; border-top: 1px solid rgba(255,255,255,0.08);
-        display: flex; flex-direction: column; gap: 4px; background: var(--ink);
-      }
-      .sidebar-user {
-        display: flex; flex-direction: column; padding: 8px 12px;
-        font-size: 11.5px; color: rgba(255,255,255,0.6);
-        overflow: hidden; border-radius: 6px; background: rgba(255,255,255,0.05);
-      }
-      .sidebar-role {
-        font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em;
-        color: rgba(255,255,255,0.35); margin-top: 2px; font-weight: 600;
-      }
-      .sidebar-collapse-btn {
-        border: none; background: transparent; color: rgba(255,255,255,0.4);
-        cursor: pointer; padding: 8px 12px; border-radius: 6px;
-        display: flex; align-items: center; justify-content: center;
-        transition: all 0.15s ease;
-      }
-      .sidebar-collapse-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
-      .sidebar-signout {
-        display: flex; align-items: center; gap: 10px; border: none;
-        background: transparent; color: #FCA5A5; font-size: 12.5px;
-        font-weight: 500; cursor: pointer; padding: 9px 12px;
-        border-radius: 6px; transition: all 0.15s ease;
-      }
-      .sidebar-signout:hover { background: rgba(220, 38, 38, 0.15); color: #FECACA; }
-
-      .sidebar.collapsed .sidebar-link { justify-content: center; padding: 10px; }
-      .sidebar.collapsed .sidebar-sublink { display: none; }
-      .sidebar.collapsed .sidebar-children { display: none; }
-      .sidebar.collapsed .sidebar-group-head { justify-content: center; }
-      .sidebar.collapsed .sidebar-chevron { display: none; }
-
-      /* =========================
-         COMPONENTS
-         ========================= */
-      .section-head { margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-      .section-head h2 { font-weight: 700; font-size: 15px; text-transform: uppercase; margin: 0; letter-spacing: .03em; color: var(--ink); }
-      .sub-heading { font-weight: 700; font-size: 12px; text-transform: uppercase; color: var(--muted); margin: 26px 0 12px; letter-spacing: .04em; }
-
-      .btn {
-        font-size: 13px; font-weight: 600; padding: 9px 16px;
-        border-radius: 8px; border: 1px solid var(--line);
-        background: var(--paper-2); color: var(--ink); cursor: pointer;
-        display: inline-flex; align-items: center; gap: 6px;
-        transition: all 0.15s ease;
-      }
-      .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-      .btn:disabled { opacity: .4; cursor: not-allowed; }
-      .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-      .btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
-
-      .icon-btn { border: none; background: transparent; color: var(--muted); cursor: pointer; padding: 6px; border-radius: 6px; display: inline-flex; transition: all 0.15s ease; }
-      .icon-btn:hover:not(:disabled) { background: var(--accent-light); color: var(--accent); }
-      .icon-btn:disabled { opacity: .3; cursor: not-allowed; }
-
-      .field { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
-      .field input, .field select {
-        font-family: 'JetBrains Mono', monospace; font-size: 13px;
-        padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
-        background: var(--paper-2); color: var(--ink); transition: border-color 0.15s ease;
-      }
-      .field input:focus, .field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(15,118,110,0.1); }
-
-      .search-input { display: flex; align-items: center; gap: 6px; background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; transition: border-color 0.15s ease; }
-      .search-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(15,118,110,0.1); }
-      .search-input svg { color: var(--muted); flex-shrink: 0; }
-      .search-input input { border: none; padding: 9px 0; background: transparent; width: 100%; }
-      .search-input input:focus { outline: none; }
-
-      .sort-control { display: flex; gap: 6px; }
-      .sort-dir-btn { white-space: nowrap; padding: 9px 12px; }
-
-      .multiselect { position: relative; }
-      .multiselect-btn {
-        width: 100%; min-width: 150px; display: flex; justify-content: space-between;
-        align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace;
-        font-size: 13px; padding: 9px 12px; border: 1px solid var(--line);
-        border-radius: 8px; background: var(--paper-2); color: var(--ink); cursor: pointer;
-        transition: border-color 0.15s ease;
-      }
-      .multiselect-btn:hover { border-color: var(--accent); }
-      .multiselect-panel {
-        position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
-        background: var(--paper-2); border: 1px solid var(--line); border-radius: 10px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.08); padding: 8px;
-        min-width: 190px; max-height: 220px; overflow-y: auto;
-        display: flex; flex-direction: column; gap: 2px;
-      }
-      .multiselect-option { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 7px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; transition: background 0.1s; }
-      .multiselect-option:hover { background: var(--gray-bg); }
-      .multiselect-clear { margin-top: 4px; font-size: 11px; padding: 5px 8px; align-self: flex-start; color: var(--accent); font-weight: 600; }
-
-      .checkbox-field { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; color: var(--ink); cursor: pointer; line-height: 1.4; }
-      .checkbox-field input { margin-top: 2px; accent-color: var(--accent); }
-
-      .stamp {
-        font-family: 'JetBrains Mono', monospace; font-size: 10px;
-        text-transform: uppercase; letter-spacing: .05em; padding: 4px 10px;
-        border-radius: 20px; border: none; white-space: nowrap;
-        display: inline-block; font-weight: 600;
-      }
-      .stamp-gray { color: var(--muted); background: var(--gray-bg); }
-      .stamp-green { color: #047857; background: #D1FAE5; }
-      .stamp-amber { color: var(--warn); background: var(--warn-bg); }
-      .stamp-blue { color: var(--info); background: var(--info-bg); }
-      .stamp-rust { color: var(--danger); background: var(--danger-bg); }
-
-      .mono-tag { font-family: 'JetBrains Mono', monospace; }
-      .entry-tag { background: var(--accent-light); color: var(--accent); padding: 3px 8px; border-radius: 6px; font-size: 10.5px; font-weight: 700; }
-
-      /* =========================
-         FORMS & TABLES
-         ========================= */
-      .ticket-form {
-        background: var(--paper-2); border: 1px solid var(--line);
-        border-radius: 12px; padding: 22px; margin-bottom: 8px;
-        display: flex; flex-direction: column; gap: 14px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-      }
-      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-      .span-2 { grid-column: span 2; }
-      .form-divider { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
-      .form-divider span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; white-space: nowrap; }
-      .form-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
-      .computed { font-size: 13px; color: var(--muted); padding-top: 2px; }
-      .computed b { color: var(--ink); font-family: 'JetBrains Mono', monospace; }
-      .form-actions { display: flex; gap: 10px; justify-content: space-between; margin-top: 4px; }
-
-      .rows-table { display: flex; flex-direction: column; gap: 8px; overflow-x: auto; }
-      .rows-head, .rows-line { display: grid; gap: 10px; align-items: center; }
-      .rows-head.cols-3, .rows-line.cols-3 { grid-template-columns: 1.6fr .9fr .9fr 30px; }
-      .rows-head.cols-5, .rows-line.cols-5 { grid-template-columns: 1.5fr .8fr .6fr .9fr .8fr; }
-      .rows-head.cols-7, .rows-line.cols-7 { grid-template-columns: .9fr 1.1fr .6fr .6fr .8fr 1fr 30px; }
-      .rows-head.cols-8, .rows-line.cols-8 { grid-template-columns: .9fr 1fr .6fr .6fr .7fr .9fr .9fr 30px; }
-      .rows-head span { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; }
-      .rows-line input, .rows-line select {
-        font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
-        padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-        background: var(--paper-2); width: 100%; transition: border-color 0.15s;
-      }
-      .rows-line input:focus, .rows-line select:focus { outline: none; border-color: var(--accent); }
-      .static-cell { font-size: 12.5px; padding: 8px 4px; }
-      .static-cell.danger { color: var(--danger); }
-      .lot-picker { width: 100%; min-width: 0; }
-
-      /* =========================
-         LISTS & CARDS
-         ========================= */
-      .list { display: flex; flex-direction: column; }
-      .row { display: flex; justify-content: space-between; align-items: center; padding: 12px 6px; gap: 12px; border-bottom: 1px solid var(--line); }
-      .row:last-child { border-bottom: none; }
-      .row-title { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      .row-sub { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
-      .row-actions { display: flex; align-items: center; gap: 6px; }
-      .row-expand { border: none; background: transparent; color: var(--muted); cursor: pointer; padding: 4px; display: flex; align-items: center; border-radius: 4px; }
-      .row-expand:hover { background: var(--gray-bg); }
-
-      .entry-card { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; background: var(--paper-2); box-shadow: 0 1px 3px rgba(0,0,0,0.03); }
-      .entry-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; background: var(--paper-2); cursor: pointer; transition: background 0.1s; }
-      .entry-card-head:hover { background: var(--gray-bg); }
-      .entry-card-title { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; color: var(--ink); }
-      .entry-card-body { padding: 4px 16px 10px; background: var(--paper-2); border-top: 1px solid var(--line); }
-      .entry-date-edit { display: flex; align-items: center; gap: 6px; }
-      .entry-date-edit input { font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; }
-
-      .edit-row { display: flex; gap: 6px; flex: 1; align-items: center; flex-wrap: wrap; }
-      .edit-row.grid-4 { display: grid; grid-template-columns: 1.6fr .8fr 1fr auto auto; gap: 8px; }
-      .edit-row.grid-5 { display: grid; grid-template-columns: 1.4fr .6fr .8fr .9fr auto auto; gap: 8px; }
-      .edit-row.grid-7 { display: grid; grid-template-columns: .8fr .9fr .6fr .6fr .8fr .9fr .9fr auto auto; gap: 8px; }
-      .edit-row.grid-8 { display: grid; grid-template-columns: .8fr .9fr .6fr .6fr .7fr .8fr .8fr .8fr auto auto; gap: 6px; }
-      .edit-row input, .edit-row select { font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 7px 8px; border: 1px solid var(--accent); border-radius: 6px; width: 100%; background: #fff; }
-
-      .detail-panel { background: var(--gray-bg); padding: 14px 18px; font-size: 12px; border-radius: 8px; }
-      .detail-title { font-weight: 700; margin-bottom: 6px; text-transform: uppercase; font-size: 10px; letter-spacing: .04em; color: var(--muted); }
-      .detail-line { color: var(--ink); padding: 3px 0; }
-
-      .production-block { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper-2); }
-      .production-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; background: var(--gray-bg); padding: 12px 14px; flex-wrap: wrap; }
-
-      /* =========================
-         LEDGER TABLE
-         ========================= */
-      .date-block { margin-bottom: 20px; }
-      .date-block-head {
-        font-family: 'JetBrains Mono', monospace; font-size: 11px;
-        text-transform: uppercase; letter-spacing: .05em; font-weight: 600;
-        background: var(--ink); color: #fff; padding: 8px 14px;
-        border-radius: 8px 8px 0 0; display: flex; justify-content: space-between;
-      }
-      .date-block-head span { color: rgba(255,255,255,0.6); text-transform: none; letter-spacing: 0; font-weight: 400; }
-      .ledger-table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--paper-2); border-radius: 0 0 8px 8px; overflow: hidden; }
-      .ledger-table th {
-        text-align: left; font-size: 10px; text-transform: uppercase;
-        letter-spacing: .04em; color: var(--muted); font-weight: 700;
-        padding: 10px 10px; border-bottom: 2px solid var(--line); background: var(--gray-bg);
-      }
-      .ledger-table td { padding: 10px 10px; border-bottom: 1px solid var(--line); }
-      .ledger-table tr:last-child td { border-bottom: none; }
-      .ledger-table td.mono, .ledger-table th.mono { font-family: 'JetBrains Mono', monospace; }
-      .ledger-table tfoot td { font-weight: 700; border-top: 2px solid var(--ink); border-bottom: none; font-family: 'JetBrains Mono', monospace; background: var(--gray-bg); }
-
-      .report-grand-total {
-        display: flex; gap: 24px; align-items: center; justify-content: flex-end;
-        flex-wrap: wrap; background: var(--accent); color: #fff;
-        border-radius: 10px; padding: 14px 20px; margin-top: 8px;
-        font-size: 13px; font-weight: 600;
-      }
-      .report-grand-total .mono { font-family: 'JetBrains Mono', monospace; font-size: 14px; }
-      .filter-bar {
-        display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px;
-        background: var(--paper-2); border: 1px solid var(--line);
-        border-radius: 12px; padding: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-      }
-
-      .empty-row { padding: 24px 4px; color: var(--muted); font-size: 13px; border: 1px dashed var(--line); border-radius: 10px; text-align: center; }
-      .locked-panel { display: flex; align-items: flex-start; gap: 10px; padding: 16px; border: 1px solid var(--danger); background: var(--danger-bg); border-radius: 10px; color: var(--danger); font-size: 13px; line-height: 1.5; }
-
-      /* =========================
-         DASHBOARD
-         ========================= */
-      .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
-      .metric-card {
-        background: var(--paper-2); border: 1px solid var(--line);
-        border-radius: 12px; padding: 18px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-        transition: box-shadow 0.15s;
-      }
-      .metric-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
-      .metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; letter-spacing: .04em; font-weight: 700; }
-      .metric-value { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; color: var(--ink); }
-      .invite-panel { border: 1px dashed var(--accent); border-radius: 12px; padding: 22px; background: var(--accent-light); }
-      .invite-title { font-weight: 700; text-transform: uppercase; font-size: 13px; margin-bottom: 6px; color: var(--accent); }
-      .invite-body { font-size: 13px; color: var(--ink); line-height: 1.6; }
-
-      /* =========================
-         TEAM
-         ========================= */
-      .team-row {
-        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-        padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px;
-        margin-bottom: 8px; background: var(--paper-2);
-      }
-      .team-row-name { font-weight: 600; font-size: 13px; min-width: 140px; }
-      .team-perm { margin: 0; white-space: nowrap; }
-
-      /* =========================
-         AUTH
-         ========================= */
-      .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; padding: 24px; box-sizing: border-box; background: var(--paper); }
-      .boot-loader { display: flex; align-items: center; gap: 10px; color: var(--muted); }
-      .login-card {
-        max-width: 400px; width: 100%; display: flex; flex-direction: column; gap: 16px;
-        background: var(--paper-2); border: 1px solid var(--line);
-        border-radius: 16px; padding: 36px 32px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.06);
-      }
-      .login-title { font-weight: 800; font-size: 22px; text-transform: uppercase; margin: 0; color: var(--ink); }
-      .login-sub { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-      .login-error { font-size: 12.5px; color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger); border-radius: 8px; padding: 10px 12px; }
-      .login-notice { font-size: 12.5px; color: #047857; background: #D1FAE5; border: 1px solid #047857; border-radius: 8px; padding: 10px 12px; }
-      .login-submit { justify-content: center; }
-      .login-switch { background: none; border: none; color: var(--accent); font-size: 12.5px; font-weight: 600; cursor: pointer; text-decoration: none; padding: 0; text-align: left; }
-      .login-switch:hover { text-decoration: underline; }
-
-      /* =========================
-         PRINT & RESPONSIVE
-         ========================= */
-          /* ===== FIX INPUT / TEXTAREA TEXT VISIBILITY ===== */
-
-input,
-textarea,
-select {
-  color: #23261F !important;
-  background-color: #FFFFFF !important;
-  -webkit-text-fill-color: #23261F !important;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap');
+*, *::before, *::after { box-sizing: border-box; }
+:root {
+  --bg: #F4F7FE;
+  --card: #FFFFFF;
+  --navy: #1B2559;
+  --muted: #A3AED0;
+  --line: #E9EDF7;
+  --brand: #4318FF;
+  --brand-2: #7551FF;
+  --brand-soft: #EEEAFF;
+  --green: #01B574; --green-soft: #E5F8F0;
+  --amber: #FFB547; --amber-soft: #FFF4E0;
+  --red: #E31A1A; --red-soft: #FEEEEE;
+  --cyan: #0BC0EA; --cyan-soft: #E3F8FC;
+  --gray-soft: #F4F7FE;
+  --shadow: 0 5px 24px rgba(112,144,176,0.14);
+  --radius: 18px;
 }
+html, body, #root { height:100%; margin:0; padding:0; width:100%; background:var(--bg); color:var(--navy); font-family:'Inter',sans-serif; }
+input, textarea, select { color:#1B2559; }
+.app-shell { min-height:100vh; background:var(--bg); }
+.loading-shell { display:flex; align-items:center; gap:10px; justify-content:center; padding:48px 0; color:var(--muted); }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.app-layout { display:flex; min-height:100vh; }
+.main-area { flex:1; min-width:0; padding:26px 30px 46px; }
+.app-main { max-width: 1180px; }
 
-input::placeholder,
-textarea::placeholder {
-  color: #777777 !important;
-  opacity: 0.5;
-}
+/* icon rail */
+.rail { width:84px; background:#fff; border-right:1px solid var(--line); display:flex; flex-direction:column; align-items:center; padding:18px 0; gap:8px; position:sticky; top:0; height:100vh; flex-shrink:0; z-index:30; }
+.rail-logo { width:46px; height:46px; border-radius:15px; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; display:flex; align-items:center; justify-content:center; margin-bottom:16px; box-shadow:0 8px 18px rgba(67,24,255,.32); }
+.rail-nav { display:flex; flex-direction:column; gap:6px; flex:1; }
+.rail-btn { width:46px; height:46px; border-radius:14px; border:none; background:transparent; color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:.15s; }
+.rail-btn:hover { background:var(--gray-soft); color:var(--navy); }
+.rail-btn.active { background:var(--brand-soft); color:var(--brand); box-shadow: inset 0 0 0 1px rgba(67,24,255,.18); }
+.rail-foot { margin-top:auto; }
 
-/* All text areas */
-textarea {
-  font-family: 'IBM Plex Sans', sans-serif;
-  font-size: 13px;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  width: 100%;
-  min-height: 100px;
-  box-sizing: border-box;
-}
+/* header + pills */
+.page-head { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+.page-head h1 { font-size:27px; font-weight:800; color:var(--navy); margin:0; letter-spacing:-.02em; }
+.page-sub { color:var(--muted); font-size:12.5px; margin-top:4px; font-weight:600; }
+.user-chip { display:flex; align-items:center; gap:10px; background:#fff; border-radius:16px; padding:8px 16px 8px 8px; box-shadow:var(--shadow); }
+.user-avatar { width:38px; height:38px; border-radius:12px; background:linear-gradient(135deg,var(--brand-2),var(--brand)); color:#fff; font-weight:800; display:flex; align-items:center; justify-content:center; }
+.user-mail { font-size:12.5px; font-weight:700; color:var(--navy); }
+.user-role { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; font-weight:800; }
+.pill-tabs { display:flex; gap:8px; margin:16px 0 22px; flex-wrap:wrap; }
+.pill { border:none; background:#fff; color:var(--muted); font-size:12.5px; font-weight:700; padding:10px 18px; border-radius:999px; cursor:pointer; box-shadow:var(--shadow); transition:.15s; }
+.pill:hover:not(.on) { color:var(--navy); }
+.pill.on { background:var(--navy); color:#fff; }
 
-textarea:focus {
-  outline: 2px solid var(--mill);
-  outline-offset: 1px;
-}
+/* generic */
+.section-head { margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.section-head h2 { font-weight:800; font-size:16px; margin:0; letter-spacing:-.01em; color:var(--navy); }
+.sub-heading { font-weight:800; font-size:12px; text-transform:uppercase; color:var(--muted); margin:26px 0 12px; letter-spacing:.06em; }
+.btn { font-size:13px; font-weight:700; padding:10px 16px; border-radius:12px; border:1px solid var(--line); background:#fff; color:var(--navy); cursor:pointer; display:inline-flex; align-items:center; gap:6px; transition:.15s; box-shadow:0 2px 8px rgba(112,144,176,.10); }
+.btn:hover:not(:disabled) { border-color:var(--brand); color:var(--brand); }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+.btn.primary { background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; border-color:transparent; box-shadow:0 6px 16px rgba(67,24,255,.28); }
+.btn.primary:hover:not(:disabled) { color:#fff; filter:brightness(1.06); }
+.icon-btn { border:none; background:transparent; color:var(--muted); cursor:pointer; padding:7px; border-radius:9px; display:inline-flex; transition:.15s; }
+.icon-btn:hover:not(:disabled) { background:var(--brand-soft); color:var(--brand); }
+.icon-btn:disabled { opacity:.3; cursor:not-allowed; }
+.field { display:flex; flex-direction:column; gap:6px; font-size:11px; color:var(--muted); font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
+.field input, .field select { font-family:'JetBrains Mono',monospace; font-size:13px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:#fff; color:var(--navy); transition:.15s; }
+.field input:focus, .field select:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(67,24,255,.10); }
+.search-input { display:flex; align-items:center; gap:6px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:0 12px; }
+.search-input:focus-within { border-color:var(--brand); box-shadow:0 0 0 3px rgba(67,24,255,.10); }
+.search-input svg { color:var(--muted); flex-shrink:0; }
+.search-input input { border:none; padding:10px 0; background:transparent; width:100%; font-family:'JetBrains Mono',monospace; font-size:13px; }
+.search-input input:focus { outline:none; }
+.sort-control { display:flex; gap:6px; }
+.sort-dir-btn { white-space:nowrap; }
+.multiselect { position:relative; }
+.multiselect-btn { width:100%; min-width:150px; display:flex; justify-content:space-between; align-items:center; gap:8px; font-family:'JetBrains Mono',monospace; font-size:13px; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:#fff; color:var(--navy); cursor:pointer; }
+.multiselect-panel { position:absolute; top:calc(100% + 4px); left:0; z-index:40; background:#fff; border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:8px; min-width:190px; max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:2px; }
+.multiselect-option { display:flex; align-items:center; gap:8px; font-size:12.5px; padding:7px 8px; border-radius:8px; cursor:pointer; white-space:nowrap; }
+.multiselect-option:hover { background:var(--gray-soft); }
+.multiselect-clear { margin-top:4px; font-size:11px; padding:5px 8px; align-self:flex-start; color:var(--brand); font-weight:700; }
+.checkbox-field { display:flex; align-items:flex-start; gap:8px; font-size:12.5px; color:var(--navy); cursor:pointer; line-height:1.45; }
+.checkbox-field input { margin-top:2px; accent-color:var(--brand); }
+.stamp { font-family:'JetBrains Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:5px 11px; border-radius:999px; white-space:nowrap; display:inline-block; font-weight:700; }
+.stamp-gray { color:var(--muted); background:var(--gray-soft); }
+.stamp-green { color:#047857; background:var(--green-soft); }
+.stamp-amber { color:#B45309; background:var(--amber-soft); }
+.stamp-blue { color:#0369A1; background:var(--cyan-soft); }
+.stamp-rust { color:var(--red); background:var(--red-soft); }
+.stamp-indigo { color:var(--brand); background:var(--brand-soft); }
+.mono-tag { font-family:'JetBrains Mono',monospace; }
+.entry-tag { background:var(--brand-soft); color:var(--brand); padding:4px 9px; border-radius:8px; font-size:10.5px; font-weight:800; }
+.pl-tag { background:var(--amber-soft); color:#B45309; padding:4px 9px; border-radius:8px; font-size:10.5px; font-weight:800; }
+.pl-chip { position:absolute; right:7px; top:50%; transform:translateY(-50%); background:var(--amber); color:#fff; font-size:8.5px; font-weight:800; padding:2px 5px; border-radius:5px; letter-spacing:.04em; }
+.pl-chip-inline { background:var(--amber-soft); color:#B45309; padding:3px 7px; border-radius:7px; font-size:10px; font-weight:800; }
+.lot-cell { position:relative; }
+.lot-cell input { width:100%; }
+.info-banner { background:var(--brand-soft); border:1px solid rgba(67,24,255,.25); color:var(--brand); border-radius:14px; padding:12px 16px; font-size:12.5px; font-weight:600; margin-bottom:16px; }
+.notice-warn { background:var(--amber-soft); border:1px solid var(--amber); color:#92400E; border-radius:12px; padding:10px 14px; font-size:12.5px; font-weight:600; margin-top:10px; }
 
-/* Fix headings */
-.app-shell h1,
-.app-shell h2,
-.app-shell h3,
-.app-shell h4,
-.app-shell h5,
-.app-shell h6,
-.section-head h2,
-.login-title,
-.invite-title,
-.app-header h1 {
-  color: #23261F !important;
-}
+/* forms */
+.ticket-form { background:#fff; border-radius:var(--radius); padding:22px; margin-bottom:10px; display:flex; flex-direction:column; gap:14px; box-shadow:var(--shadow); }
+.grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.span-2 { grid-column:span 2; }
+.form-divider { display:flex; align-items:center; gap:10px; }
+.form-divider span { font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:800; white-space:nowrap; }
+.form-divider::after { content:""; flex:1; border-top:1px dashed var(--line); }
+.computed { font-size:13px; color:var(--muted); font-weight:600; }
+.computed b { color:var(--navy); font-family:'JetBrains Mono',monospace; }
+.form-actions { display:flex; gap:10px; justify-content:space-between; align-items:center; }
+.rows-table { display:flex; flex-direction:column; gap:8px; overflow-x:auto; }
+.rows-head, .rows-line { display:grid; gap:10px; align-items:center; }
+.rows-head.cols-3, .rows-line.cols-3 { grid-template-columns:1.6fr .9fr .9fr 30px; }
+.rows-head.cols-5, .rows-line.cols-5 { grid-template-columns:1.5fr .8fr .6fr .9fr .8fr; }
+.rows-head.cols-7, .rows-line.cols-7 { grid-template-columns:.9fr 1.1fr .6fr .6fr .8fr 1fr 30px; }
+.rows-head.cols-8, .rows-line.cols-8 { grid-template-columns:.9fr 1fr .6fr .6fr .7fr .9fr .9fr 30px; }
+.rows-head span { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:800; }
+.rows-line input, .rows-line select { font-family:'JetBrains Mono',monospace; font-size:12.5px; padding:9px 10px; border:1px solid var(--line); border-radius:10px; background:#fff; width:100%; }
+.rows-line input:focus, .rows-line select:focus { outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(67,24,255,.08); }
+.static-cell { font-size:12.5px; padding:8px 4px; font-weight:600; }
+.static-cell.danger { color:var(--red); }
+.lot-picker { width:100%; min-width:0; }
 
-/* Search input fix */
-.search-input input {
-  color: #23261F !important;
-  background: transparent !important;
-}
+/* import panel */
+.import-bar { display:flex; justify-content:flex-end; }
+.import-toggle { border-color:rgba(67,24,255,.35); color:var(--brand); background:var(--brand-soft); }
+.import-panel { background:#fff; border:1.5px dashed rgba(67,24,255,.4); border-radius:16px; padding:16px; display:flex; flex-direction:column; gap:10px; }
+.import-panel-head { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+.import-panel-title { font-size:12px; font-weight:700; color:var(--muted); }
+.import-batch { border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+.import-batch-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; background:var(--gray-soft); padding:10px 12px; font-size:12px; font-weight:600; color:var(--navy); }
+.select-all-btn { margin-left:auto; padding:6px 12px; font-size:11px; border-radius:999px; }
+.import-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-top:1px solid var(--line); cursor:pointer; font-size:12.5px; }
+.import-row:hover { background:var(--brand-soft); }
+.import-row input { accent-color:var(--brand); }
+.import-row-main { color:var(--navy); font-weight:600; }
 
-/* Existing fields */
-.field input,
-.field select,
-.rows-line input,
-.rows-line select,
-.edit-row input,
-.edit-row select,
-.multiselect-btn {
-  color: #23261F !important;
-  background-color: #FFFFFF !important;
+/* lists & cards */
+.panel-list { background:#fff; border-radius:var(--radius); box-shadow:var(--shadow); padding:6px 18px; }
+.pick-list { max-height:300px; overflow-y:auto; border:1px solid var(--line); border-radius:12px; padding:8px; }
+.pick-row { padding:7px 6px; border-bottom:1px solid var(--line); }
+.pick-row:last-child { border-bottom:none; }
+.list { display:flex; flex-direction:column; }
+.row { display:flex; justify-content:space-between; align-items:center; padding:13px 4px; gap:12px; border-bottom:1px solid var(--line); }
+.row:last-child { border-bottom:none; }
+.row-title { font-weight:700; font-size:13.5px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--navy); }
+.row-sub { font-size:11.5px; color:var(--muted); margin-top:3px; font-weight:600; }
+.row-actions { display:flex; align-items:center; gap:6px; }
+.row-expand { border:none; background:transparent; color:var(--muted); cursor:pointer; padding:4px; display:flex; align-items:center; border-radius:6px; }
+.row-expand:hover { background:var(--gray-soft); }
+.entry-card { border-radius:16px; margin-bottom:12px; overflow:hidden; background:#fff; box-shadow:var(--shadow); }
+.entry-card-head { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:14px 18px; cursor:pointer; transition:.12s; }
+.entry-card-head:hover { background:var(--gray-soft); }
+.entry-card-title { display:flex; align-items:center; gap:9px; font-size:13px; flex-wrap:wrap; color:var(--navy); font-weight:600; }
+.entry-card-body { padding:4px 18px 12px; border-top:1px solid var(--line); }
+.entry-date-edit { display:flex; align-items:center; gap:6px; }
+.entry-date-edit input, .entry-date-edit select { font-family:'JetBrains Mono',monospace; font-size:12px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; }
+.edit-row { display:flex; gap:6px; flex:1; align-items:center; flex-wrap:wrap; }
+.edit-row.grid-4 { display:grid; grid-template-columns:1.6fr .8fr 1fr auto auto; gap:8px; }
+.edit-row.grid-5 { display:grid; grid-template-columns:1.4fr .6fr .8fr .9fr auto auto; gap:8px; }
+.edit-row.grid-8 { display:grid; grid-template-columns:.8fr .9fr .6fr .6fr .7fr .8fr .8fr .8fr auto auto; gap:6px; }
+.edit-row input, .edit-row select { font-family:'JetBrains Mono',monospace; font-size:12px; padding:8px; border:1.5px solid var(--brand); border-radius:9px; width:100%; background:#fff; }
+.detail-panel { background:var(--gray-soft); padding:14px 18px; font-size:12px; border-radius:12px; }
+.detail-title { font-weight:800; margin-bottom:6px; text-transform:uppercase; font-size:10px; letter-spacing:.06em; color:var(--muted); }
+.detail-line { color:var(--navy); padding:3px 0; font-weight:600; }
+.production-block { margin-bottom:14px; border:1px solid var(--line); border-radius:14px; overflow:hidden; background:#fff; }
+.production-head { display:flex; justify-content:space-between; align-items:center; gap:10px; background:var(--gray-soft); padding:12px 14px; flex-wrap:wrap; }
+
+/* dashboard */
+.metric-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(225px,1fr)); gap:16px; margin-bottom:18px; }
+.metric-card { position:relative; background:#fff; border-radius:var(--radius); padding:18px 18px 16px 24px; box-shadow:var(--shadow); overflow:hidden; }
+.metric-card::before { content:''; position:absolute; left:0; top:16px; bottom:16px; width:4px; border-radius:0 4px 4px 0; background:var(--brand); }
+.metric-card.tone-violet::before { background:var(--brand-2); }
+.metric-card.tone-green::before { background:var(--green); }
+.metric-card.tone-amber::before { background:var(--amber); }
+.metric-card.tone-cyan::before { background:var(--cyan); }
+.metric-top { display:flex; justify-content:space-between; align-items:flex-start; }
+.metric-label { font-size:11px; color:var(--muted); font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
+.metric-icon { width:34px; height:34px; border-radius:10px; background:var(--gray-soft); color:var(--navy); display:flex; align-items:center; justify-content:center; }
+.metric-value { font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:700; color:var(--navy); margin-top:8px; }
+.metric-sub { font-size:11.5px; color:var(--muted); margin-top:4px; font-weight:600; }
+.dash-grid { display:grid; grid-template-columns:1.35fr 1fr; gap:16px; margin-bottom:18px; }
+.panel { background:#fff; border-radius:var(--radius); box-shadow:var(--shadow); padding:20px; }
+.panel-title { font-size:15px; font-weight:800; color:var(--navy); margin:0 0 14px; }
+.panel-foot { margin-top:12px; font-size:11.5px; color:var(--muted); font-weight:700; }
+.bar-row { margin-bottom:11px; }
+.bar-label { display:flex; justify-content:space-between; font-size:11.5px; font-weight:700; color:var(--muted); margin-bottom:5px; }
+.bar-track { height:8px; border-radius:99px; background:var(--gray-soft); overflow:hidden; }
+.bar-fill { height:100%; border-radius:99px; }
+.watch-row { display:flex; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--line); font-size:12px; font-weight:600; color:var(--navy); }
+.watch-row:last-child { border-bottom:none; }
+.watch-main { flex:1; color:var(--muted); }
+.watch-val { font-family:'JetBrains Mono',monospace; font-size:11.5px; }
+
+/* tables */
+.date-block { margin-bottom:20px; }
+.date-block-head { font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:700; background:var(--navy); color:#fff; padding:9px 16px; border-radius:14px 14px 0 0; display:flex; justify-content:space-between; }
+.date-block-head span { color:rgba(255,255,255,0.65); text-transform:none; letter-spacing:0; font-weight:500; }
+.ledger-table { width:100%; border-collapse:collapse; font-size:12.5px; background:#fff; border-radius:0 0 14px 14px; overflow:hidden; box-shadow:var(--shadow); }
+.ledger-table th { text-align:left; font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:800; padding:11px 12px; border-bottom:1px solid var(--line); background:#FBFCFF; }
+.ledger-table td { padding:11px 12px; border-bottom:1px solid var(--line); color:var(--navy); }
+.ledger-table tr:last-child td { border-bottom:none; }
+.ledger-table td.mono { font-family:'JetBrains Mono',monospace; }
+.ledger-table tfoot td { font-weight:800; border-top:2px solid var(--navy); border-bottom:none; font-family:'JetBrains Mono',monospace; background:#FBFCFF; }
+.filter-bar + .ledger-table, .section-head + .ledger-table { border-radius:14px; }
+.report-grand-total { display:flex; gap:24px; align-items:center; justify-content:flex-end; flex-wrap:wrap; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; border-radius:16px; padding:15px 22px; margin-top:10px; font-size:13px; font-weight:700; box-shadow:0 8px 20px rgba(67,24,255,.28); }
+.report-grand-total .mono { font-family:'JetBrains Mono',monospace; font-size:14px; }
+.filter-bar { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:18px; background:#fff; border-radius:var(--radius); padding:16px; box-shadow:var(--shadow); }
+.empty-row { padding:24px 4px; color:var(--muted); font-size:13px; border:1.5px dashed var(--line); border-radius:14px; text-align:center; font-weight:600; }
+.locked-panel { display:flex; align-items:flex-start; gap:10px; padding:16px; border:1px solid var(--red); background:var(--red-soft); border-radius:14px; color:var(--red); font-size:13px; line-height:1.5; font-weight:600; }
+.invite-panel { border:1.5px dashed var(--brand); border-radius:var(--radius); padding:22px; background:var(--brand-soft); }
+.invite-title { font-weight:800; text-transform:uppercase; font-size:13px; margin-bottom:6px; color:var(--brand); }
+.invite-body { font-size:13px; color:var(--navy); line-height:1.6; font-weight:600; }
+.team-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:14px 18px; border-radius:14px; margin-bottom:10px; background:#fff; box-shadow:var(--shadow); }
+.team-row-name { font-weight:700; font-size:13px; min-width:140px; }
+.team-row select { font-family:'JetBrains Mono',monospace; font-size:12px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; }
+.team-perm { margin:0; white-space:nowrap; }
+
+/* auth */
+.login-page { display:flex; align-items:center; justify-content:center; min-height:100vh; width:100%; padding:24px; background:var(--bg); }
+.boot-loader { display:flex; align-items:center; gap:10px; color:var(--muted); font-weight:600; }
+.login-card { max-width:410px; width:100%; display:flex; flex-direction:column; gap:15px; background:#fff; border-radius:24px; padding:38px 34px; box-shadow:var(--shadow); }
+.login-logo { width:52px; height:52px; border-radius:16px; background:linear-gradient(135deg,var(--brand),var(--brand-2)); color:#fff; display:flex; align-items:center; justify-content:center; box-shadow:0 10px 22px rgba(67,24,255,.3); }
+.login-title { font-weight:800; font-size:23px; margin:0; color:var(--navy); letter-spacing:-.02em; }
+.login-sub { font-size:13px; color:var(--muted); font-weight:600; }
+.login-error { font-size:12.5px; color:var(--red); background:var(--red-soft); border:1px solid var(--red); border-radius:10px; padding:10px 12px; font-weight:600; }
+.login-notice { font-size:12.5px; color:#047857; background:var(--green-soft); border:1px solid #047857; border-radius:10px; padding:10px 12px; font-weight:600; }
+.login-submit { justify-content:center; }
+.login-switch { background:none; border:none; color:var(--brand); font-size:12.5px; font-weight:700; cursor:pointer; padding:0; text-align:left; }
+.login-switch:hover { text-decoration:underline; }
+
+@media print { .no-print { display:none !important; } .rail { display:none !important; } .main-area { padding:0; } }
+@media (max-width: 900px) { .dash-grid { grid-template-columns:1fr; } }
+@media (max-width: 640px) {
+  .rail { position:fixed; z-index:100; height:100vh; }
+  .main-area { padding:18px 14px 30px; }
+  .rows-head, .rows-line, .rows-head.cols-3, .rows-line.cols-3, .rows-head.cols-5, .rows-line.cols-5, .rows-head.cols-7, .rows-line.cols-7, .rows-head.cols-8, .rows-line.cols-8 { grid-template-columns:1fr; }
+  .grid-2 { grid-template-columns:1fr; }
+  .span-2 { grid-column:span 1; }
+  .filter-bar { flex-direction:column; }
+  .edit-row.grid-4, .edit-row.grid-5, .edit-row.grid-8 { grid-template-columns:1fr; }
 }
-         @media print { .no-print { display: none !important; } .app-shell { border: none; } }
-      @media (max-width: 640px) {
-        .sidebar { position: fixed; z-index: 100; height: 100vh; box-shadow: 4px 0 24px rgba(0,0,0,0.12); }
-        .sidebar.collapsed { width: 0; border: none; padding: 0; }
-        .rows-head, .rows-line,
-        .rows-head.cols-3, .rows-line.cols-3,
-        .rows-head.cols-5, .rows-line.cols-5,
-        .rows-head.cols-7, .rows-line.cols-7,
-        .rows-head.cols-8, .rows-line.cols-8 { grid-template-columns: 1fr; }
-        .grid-2 { grid-template-columns: 1fr; }
-        .span-2 { grid-column: span 1; }
-        .filter-bar { flex-direction: column; }
-        .edit-row.grid-4, .edit-row.grid-5, .edit-row.grid-7, .edit-row.grid-8 { grid-template-columns: 1fr; }
-      }
-    `}</style>
+`}</style>
   );
 }
