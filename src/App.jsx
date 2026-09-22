@@ -60,7 +60,19 @@ const uid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID() :
 const money = (n) => "Rs " + (Number(n) || 0).toLocaleString("en-PK", { maximumFractionDigits: 0 });
 const num = (n, d = 2) => (Number(n) || 0).toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: d });
 const todayISO = () => new Date().toISOString().slice(0, 10);
-const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+const fmtDate = (d) => {
+  if (!d) return "Date not recorded";
+  // Supabase may return either a DATE (YYYY-MM-DD) or a full timestamp.
+  // Only append a local time to date-only values; appending it to a timestamp
+  // produces an invalid string such as "...+00:00T00:00:00".
+  const value = String(d).trim();
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T00:00:00`)
+    : new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? "Date not recorded"
+    : parsed.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+};
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const confirmDelete = (label) => window.confirm(`Delete ${label || "this"}? This can't be undone.`);
 const lotKey = (v) => String(v ?? "").trim().toLowerCase();
