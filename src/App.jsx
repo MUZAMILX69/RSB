@@ -9,19 +9,66 @@ import {
 const SUPABASE_URL = "https://eovfcjadpyjxavymtqwf.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_UmpsvgnasiG799Xpw86KlA_UQv-plKX";
 let ACCESS_TOKEN = null;
-const setAccessToken = (t) => { ACCESS_TOKEN = t; };
-async function sbRequest(path, { method = "GET", body, headers = {} } = {}) {
+let AUTH_REVISION = 0;
+let refreshInFlight = null;
+const setAccessToken = (t) => { ACCESS_TOKEN = t; AUTH_REVISION += 1; };
+const tokenExpiresSoon = (token) => {
+  if (!token) return false;
+  try {
+    const part = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const { exp } = JSON.parse(atob(part.padEnd(Math.ceil(part.length / 4) * 4, "=")));
+    return Number.isFinite(exp) && exp * 1000 <= Date.now() + 60000;
+  } catch { return false; }
+};
+async function refreshAccessToken() {
+  // Share one refresh across simultaneous saves/loads and React startup effects.
+  if (refreshInFlight) return refreshInFlight;
+  const rt = loadRefreshToken();
+  if (!rt) throw new Error("Your session has ended. Please sign in again.");
+  const revision = AUTH_REVISION;
+  refreshInFlight = (async () => {
+    try {
+      const d = await authRefresh(rt);
+      // A sign-out or a different login must not be undone by a late response.
+      if (revision !== AUTH_REVISION) throw new Error("Your login changed. Please retry.");
+      if (!d?.access_token || !d?.refresh_token) throw new Error("Session refresh returned no login tokens.");
+      setAccessToken(d.access_token);
+      saveRefreshToken(d.refresh_token);
+      return d;
+    } catch (e) {
+      if (revision === AUTH_REVISION && (e.status === 400 || e.status === 401 || e.status === 403)) {
+        setAccessToken(null); clearRefreshToken();
+        throw new Error("Your session has ended. Please sign in again.");
+      }
+      throw e;
+    } finally { refreshInFlight = null; }
+  })();
+  return refreshInFlight;
+}
+async function sbRequest(path, { method = "GET", body, headers = {} } = {}, retried = false) {
+  const isDatabase = path.startsWith("/rest/v1/");
+  if (isDatabase && ACCESS_TOKEN && tokenExpiresSoon(ACCESS_TOKEN)) await refreshAccessToken();
+  const requestToken = ACCESS_TOKEN;
   const res = await fetch(`${SUPABASE_URL}${path}`, {
     method,
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${ACCESS_TOKEN || SUPABASE_ANON_KEY}`, "Content-Type": "application/json", ...headers },
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${(isDatabase && requestToken) || SUPABASE_ANON_KEY}`, "Content-Type": "application/json", ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   let data = null;
-  if (text) { try { data = JSON.parse(text); } catch (e) { data = text; } }
+  if (text) { try { data = JSON.parse(text); } catch { data = text; } }
   if (!res.ok) {
     const msg = (data && (data.message || data.error_description || data.msg || data.error)) || `Request failed (${res.status})`;
-    throw new Error(msg);
+    const expiredJwt = res.status === 401 && /(?:jwt|token).*expir|expir.*(?:jwt|token)/i.test(msg);
+    if (isDatabase && expiredJwt && !retried && requestToken) {
+      // A concurrent request may already have refreshed this token.
+      if (ACCESS_TOKEN === requestToken) await refreshAccessToken();
+      if (!ACCESS_TOKEN) throw new Error("Your session has ended. Please sign in again.");
+      return sbRequest(path, { method, body, headers }, true);
+    }
+    const error = new Error(msg);
+    error.status = res.status;
+    throw error;
   }
   return data;
 }
@@ -367,8 +414,7 @@ export default function ReelStockManager() {
       const rt = loadRefreshToken();
       if (!rt) { setBooting(false); return; }
       try {
-        const d = await authRefresh(rt);
-        setAccessToken(d.access_token); saveRefreshToken(d.refresh_token);
+        const d = await refreshAccessToken();
         setSession({ accessToken: d.access_token, refreshToken: d.refresh_token, user: d.user });
       } catch (e) { clearRefreshToken(); } finally { setBooting(false); }
     })();
@@ -394,7 +440,6 @@ function AuthedApp({ session, onSignOut }) {
   const [productionItems, setProductionItems] = useState([]);
   const [pipeline, setPipeline] = useState([]);
   useEffect(() => {
-    setAccessToken(session.accessToken);
     (async () => {
       try {
         const profRows = await sbList("profiles", `?id=eq.${session.user.id}&select=*`);
